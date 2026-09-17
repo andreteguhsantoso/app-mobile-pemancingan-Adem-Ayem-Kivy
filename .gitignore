@@ -5,3 +5,10 @@
 __pycache__/
 *.pyc
 mvp.db
+*.db-wal
+*.db-shm
+backups/
+bin/
+.buildozer/
+dist/
+build/

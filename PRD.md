@@ -1,9 +1,9 @@
-# PRD: Aplikasi Pemesanan Tiket dan Platform Informasi Pemancingan
+# PRD: Pemancingan Adem Ayem Dlopo
 
 ## 1. Project Overview
 
 ### 1.1 Ringkasan Produk
-Aplikasi ini adalah platform digital untuk satu lokasi pemancingan yang berfungsi sebagai:
+Aplikasi ini adalah platform digital resmi untuk satu lokasi, **Pemancingan Adem Ayem Dlopo**, yang berfungsi sebagai:
 - Sistem pemesanan tiket untuk event memancing
 - Pusat informasi operasional pemancingan
 - Media promosi event, berita, galeri, dan hasil tangkapan
@@ -688,21 +688,24 @@ Walau awal hanya satu pemancingan, arsitektur sebaiknya siap untuk:
 - Validasi persetujuan aturan umpan alami pada proses booking
 - Konten dan aset visual khusus ikan nila
 
-### 8.1.1 Implementasi MVP Lokal Saat Ini
-- Aplikasi Kivy dengan navigasi Beranda, Event, Galeri, dan Info
-- Tiga contoh event khusus nila
-- Form booking dan kalkulasi total tiket
+### 8.1.1 Implementasi MVP Kivy Saat Ini
+- Aplikasi Kivy dengan navigasi Beranda, Agenda, Galeri, Juara, dan Profil
+- Mode tamu untuk seluruh konten publik serta akun wajib untuk transaksi tiket
+- Registrasi, login, logout, profil per pengguna, dan foto profil lokal
+- Empat event khusus nila dan pemilihan 82 lapak
+- Form booking satu lapak dan kalkulasi total tiket
 - Pilihan metode pembayaran dalam mode simulasi
 - Tiket digital dengan kode booking unik
-- Penyimpanan booking lokal menggunakan SQLite
+- Database SQLite persisten untuk event, 82 status lapak, dan booking
+- Submit booking atomik dengan perlindungan terhadap pemesanan lapak ganda
+- Riwayat tiket dapat dibuka kembali setelah aplikasi dijalankan ulang
 - Persetujuan aturan umpan sebagai syarat booking
 - Aset gambar lokal tanpa ketergantungan internet
-- Payment gateway, QR code, autentikasi, berita, leaderboard dinamis, dan panel admin dilanjutkan pada iterasi berikutnya
+- Payment gateway, QR yang dapat dipindai, autentikasi, cuaca langsung, dan panel admin lanjutan dilanjutkan pada iterasi berikutnya
 
 ### 8.2 Versi Lanjutan
 - Push notification
 - WhatsApp notification
-- Membership / loyalti
 - Promo voucher
 - Forecast minat ikan lebih detail
 - Statistik peserta

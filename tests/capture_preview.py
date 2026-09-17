@@ -14,7 +14,7 @@ from app import FishingMVPApp
 
 class PreviewApp(FishingMVPApp):
     def on_start(self):
-        Clock.schedule_once(self.capture_home, 1.5)
+        Clock.schedule_once(self.capture_home, 4.0)
 
     def capture_home(self, *_args):
         output = os.path.join(PROJECT_DIR, "wireframes", "implementation-home.png")

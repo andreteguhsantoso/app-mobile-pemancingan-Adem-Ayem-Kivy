@@ -1,4 +1,4 @@
-# Wireframe Aplikasi Pemancingan Nila Kediri
+# Wireframe Aplikasi Pemancingan Adem Ayem Dlopo
 
 Dokumen ini menjadi indeks visual untuk implementasi berdasarkan `PRD.md`. Seluruh layar menggunakan konteks satu lokasi pemancingan dan satu jenis ikan, yaitu ikan nila.
 
@@ -143,7 +143,8 @@ Wireframe ini telah dijadikan referensi utama pada implementasi Kivy di `app.py`
 - Layar 5-9: pilihan event, denah 82 lapak, data pemesan, pembayaran, dan tiket sudah aktif.
 - Layar 10-14: leaderboard, galeri, berita, status harian, dan pesanan sudah aktif.
 - Layar 15-16: dashboard admin dan kelola operasional tersedia sebagai MVP lokal.
-- Data booking tersimpan di SQLite; data event dan konten operasional masih berupa data contoh lokal.
+- Data event, status 82 lapak, dan booking tersimpan persisten pada database SQLite lokal.
+- Submit booking memakai transaksi atomik sehingga lapak yang sama tidak dapat dipesan dua kali.
 - Pembayaran, cuaca, notifikasi, dan QR yang dapat dipindai memerlukan integrasi layanan produksi.
 
 ## Aset Carousel
