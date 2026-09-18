@@ -48,6 +48,9 @@ def run_database_test():
         path = os.path.join(directory, "booking.db")
         database = BookingDatabase(path)
         database.initialize(EVENTS, {"TEST-01": {1}})
+        health = database.health_check()
+        assert health["healthy"] is True
+        assert health["counts"]["events"] == 1
 
         created_event = {
             "event_id": "TEST-ADMIN",
@@ -65,10 +68,13 @@ def run_database_test():
         )
         assert admin_event["available"] == 80
         created_event["title"] = "Event Admin Diperbarui"
+        created_event["available"] = 79
         database.update_event("TEST-ADMIN", created_event)
-        assert next(
+        updated_admin_event = next(
             row for row in database.list_events() if row["event_id"] == "TEST-ADMIN"
-        )["title"] == "Event Admin Diperbarui"
+        )
+        assert updated_admin_event["title"] == "Event Admin Diperbarui"
+        assert updated_admin_event["available"] == 79
         database.set_event_active("TEST-ADMIN", False)
         assert "TEST-ADMIN" not in {row["event_id"] for row in database.list_events()}
         assert "TEST-ADMIN" in {
@@ -81,6 +87,26 @@ def run_database_test():
         assert database.list_gallery_items()[0]["id"] == gallery_id
         database.set_gallery_active(gallery_id, False)
         assert database.list_gallery_items() == []
+
+        leaderboard_id = database.create_leaderboard_entry(
+            {
+                "name": "Juara Uji",
+                "event": "Event Uji",
+                "biggest": 3.5,
+                "total": 8.2,
+                "count": 3,
+                "spot": "Lapak 03",
+                "image": "C:/content/champion.jpg",
+                "periods": ("Per Event", "Bulanan"),
+            }
+        )
+        assert database.list_leaderboard_entries()[0]["id"] == leaderboard_id
+        leaderboard_update = database.list_leaderboard_entries()[0]
+        leaderboard_update["biggest"] = 3.75
+        database.update_leaderboard_entry(leaderboard_id, leaderboard_update)
+        assert database.list_leaderboard_entries()[0]["biggest"] == 3.75
+        database.set_leaderboard_active(leaderboard_id, False)
+        assert database.list_leaderboard_entries() == []
 
         news_id = database.create_news_item(
             {
@@ -103,6 +129,22 @@ def run_database_test():
         user = database.create_user(
             "pemancing_uji", "password-kuat", "Pemancing Uji", "081234567890"
         )
+        submission_id = database.create_gallery_item(
+            "Kiriman Pengguna",
+            "Tangkapan",
+            "C:/content/user-gallery.jpg",
+            actor="user:pemancing_uji",
+            user_id=user["id"],
+            submitted_by=user["full_name"],
+            approved=False,
+        )
+        assert database.list_gallery_items() == []
+        user_submissions = database.list_gallery_items(
+            active_only=False, user_id=user["id"]
+        )
+        assert user_submissions[0]["moderation_status"] == "pending"
+        database.moderate_gallery_item(submission_id, "approved")
+        assert database.list_gallery_items()[0]["id"] == submission_id
         assert database.authenticate_user("PEMANCING_UJI", "password-kuat")["id"] == user["id"]
         assert database.authenticate_user("pemancing_uji", "password-salah") is None
         history = database.login_history(user["id"])
@@ -112,6 +154,15 @@ def run_database_test():
             user["id"], "pemancing_baru", "Pemancing Baru", "089999999999"
         )
         assert user["username"] == "pemancing_baru"
+        avatar_path = os.path.join(directory, "avatar-pemancing.jpg")
+        user = database.update_user(
+            user["id"], user["username"], user["full_name"], user["phone"], avatar_path
+        )
+        assert database.get_user(user["id"])["avatar_path"] == avatar_path
+        user = database.update_user(
+            user["id"], user["username"], user["full_name"], user["phone"], None
+        )
+        assert database.get_user(user["id"])["avatar_path"] is None
         database.change_password(user["id"], "password-kuat", "password-baru")
         assert database.authenticate_user("pemancing_baru", "password-kuat") is None
         assert database.authenticate_user("pemancing_baru", "password-baru") is not None

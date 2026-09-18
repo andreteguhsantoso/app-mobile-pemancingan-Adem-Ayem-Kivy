@@ -30,9 +30,12 @@ def run_smoke_test():
     assert module.GOOGLE_MAPS_URL == "https://maps.app.goo.gl/cQtnrkjTiAvC5JNC7"
     assert module.DB_PATH.endswith("mvp.db")
     assert application.operational_status["venue_status"] == "Buka"
+    assert application.database_health["healthy"] is True
     assert application.manager.has_screen("admin_events")
     assert application.manager.has_screen("admin_gallery")
     assert application.manager.has_screen("admin_news")
+    assert application.manager.has_screen("admin_leaderboard")
+    assert application.manager.has_screen("gallery_submit")
 
     opened_urls = []
     original_open = module.webbrowser.open
@@ -85,11 +88,30 @@ def run_smoke_test():
             "facts": "125 KG | 82 LAPAK",
         }
     )
+    application.database.create_leaderboard_entry(
+        {
+            "name": "Juara Dinamis",
+            "event": "Event Dinamis Admin",
+            "biggest": 4.25,
+            "total": 9.5,
+            "count": 3,
+            "spot": "Lapak 52",
+            "image": "leaderboard-champion.png",
+            "periods": ("Bulanan",),
+        }
+    )
     application.reload_content_data(refresh_widgets=True)
     assert "ADMIN-SMOKE" in module.EVENTS
     assert len(application.event_cards) == 5
+    assert len(module.HERO_SLIDES) == 5
+    application.show_hero_slide(4)
+    assert application.hero_counter.text == "5 / 5"
+    assert application.hero_title.text == module.HERO_SLIDES[4]["title"]
+    application.next_hero_slide()
+    assert application.hero_counter.text == "1 / 5"
     assert any(title == "Galeri Dinamis" for _, title, _ in module.GALLERY_ITEMS)
     assert module.NEWS_ITEMS[0]["title"] == "Berita Dinamis"
+    assert module.LEADERBOARD_ENTRIES[0]["name"] == "Juara Dinamis"
 
     application.filter_leaderboard("Hari Ini")
     assert len(application.leaderboard_list.children) == 3
@@ -131,6 +153,8 @@ def run_smoke_test():
     assert booking["booking_code"].startswith("AA-")
     assert booking["user_id"] == user["id"]
     assert booking["customer_notes"] == "Datang bersama keluarga"
+    assert booking["payment_status"] == "pay_at_venue"
+    assert booking["payment_reference"] is None
     assert application.remaining_spots("NILA-GP") == 13
     assert application.home_availability_label.text == "13 dari 82 lapak tersisa"
 
@@ -158,6 +182,19 @@ def run_smoke_test():
     assert application.navigation.height > 0
     assert application.profile_active_count.value_label.text == "1"
     assert application.profile_ticket_title.text == module.EVENTS["NILA-GP"]["title"]
+
+    application.open_account_settings()
+    avatar_path = module.asset("leaderboard-man.png")
+    application.pending_avatar_path = avatar_path
+    application.save_profile()
+    assert application.current_user["avatar_path"] == avatar_path
+    assert isinstance(application.profile_avatar.children[0], module.Image)
+    assert application.profile_photo_button.text == "Ganti Foto Profil"
+    application.open_account_settings()
+    application.remove_profile_photo()
+    application.save_profile()
+    assert application.current_user["avatar_path"] is None
+    assert application.profile_photo_button.text == "Tambah Foto Profil"
 
     ticket_code = booking["booking_code"]
     persisted = application.database.list_bookings(user_id=user["id"])

@@ -44,7 +44,10 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ASSET_DIR = os.path.join(BASE_DIR, "assets", "generated")
 DB_PATH = os.path.join(BASE_DIR, "mvp.db")
 GOOGLE_MAPS_URL = "https://maps.app.goo.gl/cQtnrkjTiAvC5JNC7"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
+SIMULATED_PAYMENTS_ENABLED = os.environ.get(
+    "ADEM_AYEM_ENABLE_SIMULATED_PAYMENTS", ""
+).strip() == "1"
 WINDOWS_FONT_DIR = os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts")
 
 
@@ -709,13 +712,17 @@ class FishingMVPApp(App):
             )
         self.database_path = database_path
         self.database = BookingDatabase(database_path)
-        self.database.initialize(EVENTS, BASE_OCCUPIED, GALLERY_ITEMS, NEWS_ITEMS)
+        self.database.initialize(
+            EVENTS, BASE_OCCUPIED, GALLERY_ITEMS, NEWS_ITEMS, LEADERBOARD_ENTRIES
+        )
         self.reload_content_data()
         self.current_user = None
         self.session_bookings = []
         self.pending_booking_event_id = None
+        self.pending_after_login_screen = None
         self.orders_admin_mode = False
         self.operational_status = self.database.operational_status()
+        self.database_health = self.database.health_check()
         self.admin_authenticated = False
         self.selected_spot = None
         self.current_ticket_booking = None
@@ -735,6 +742,7 @@ class FishingMVPApp(App):
         self.manager.add_widget(self.build_payment())
         self.manager.add_widget(self.build_ticket())
         self.manager.add_widget(self.build_gallery())
+        self.manager.add_widget(self.build_gallery_submit())
         self.manager.add_widget(self.build_leaderboard())
         self.manager.add_widget(self.build_news())
         self.manager.add_widget(self.build_news_detail())
@@ -750,6 +758,7 @@ class FishingMVPApp(App):
         self.manager.add_widget(self.build_admin_events())
         self.manager.add_widget(self.build_admin_gallery())
         self.manager.add_widget(self.build_admin_news())
+        self.manager.add_widget(self.build_admin_leaderboard())
         self.manager.add_widget(self.build_operations())
         self.manager.add_widget(self.build_info())
         self.manager.add_widget(self.build_legal())
@@ -760,7 +769,7 @@ class FishingMVPApp(App):
         return root
 
     def reload_content_data(self, refresh_widgets=False):
-        global GALLERY_ITEMS, NEWS_ITEMS, HERO_SLIDES
+        global GALLERY_ITEMS, NEWS_ITEMS, HERO_SLIDES, LEADERBOARD_ENTRIES
         all_event_rows = self.database.list_events(active_only=False)
         self.all_events = {
             row["event_id"]: {key: value for key, value in row.items() if key != "event_id"}
@@ -778,6 +787,9 @@ class FishingMVPApp(App):
             for row in gallery_rows
         )
         NEWS_ITEMS = tuple(self.database.list_news_items(active_only=True))
+        LEADERBOARD_ENTRIES = tuple(
+            self.database.list_leaderboard_entries(active_only=True)
+        )
         if event_rows:
             HERO_SLIDES = tuple(
                 {
@@ -787,12 +799,13 @@ class FishingMVPApp(App):
                     "meta": f'{event["date"]} | {event["time"]} | {rupiah(event["price"])}',
                     "event_id": event["event_id"],
                 }
-                for event in tuple(reversed(event_rows))[:4]
+                for event in reversed(event_rows)
             )
         if refresh_widgets:
             self.rebuild_event_cards()
             self.filter_gallery("Semua")
             self.filter_news("Semua")
+            self.filter_leaderboard("Per Event")
             if HERO_SLIDES and hasattr(self, "hero_image"):
                 self.show_hero_slide(0)
             self.refresh_home_content()
@@ -1463,7 +1476,7 @@ class FishingMVPApp(App):
 
         content.add_widget(section_heading("Metode pembayaran", "Pilih cara pembayaran yang paling nyaman"))
         self.payment_method = StyledSpinner(
-            text="QRIS / GoPay / OVO",
+            text="QRIS / GoPay / OVO" if SIMULATED_PAYMENTS_ENABLED else "Bayar di lokasi",
             values=("QRIS / GoPay / OVO", "Transfer Bank BCA", "Transfer Bank Mandiri", "Bayar di lokasi"),
         )
         self.payment_method.bind(text=lambda *_: self.update_payment_total())
@@ -1503,7 +1516,19 @@ class FishingMVPApp(App):
             )
         )
         content.add_widget(persistence_note)
-        content.add_widget(label("Pembayaran pada MVP masih disimulasikan. Integrasi payment gateway dilakukan pada fase produksi.", 54, 10, COLORS["muted"], False, "center"))
+        self.payment_safety_note = label(
+            (
+                "MODE PENGEMBANGAN: pembayaran digital disimulasikan."
+                if SIMULATED_PAYMENTS_ENABLED
+                else "Pembayaran digital belum aktif. Untuk keamanan, gunakan Bayar di lokasi."
+            ),
+            54,
+            10,
+            COLORS["muted"],
+            False,
+            "center",
+        )
+        content.add_widget(self.payment_safety_note)
         self.pay_button = PrimaryButton(text="Konfirmasi & Buat Tiket")
         self.pay_button.bind(on_release=lambda *_: self.show_booking_confirmation())
         content.add_widget(self.pay_button)
@@ -1577,6 +1602,22 @@ class FishingMVPApp(App):
         featured.add_widget(label("Pelepasan ikan sebelum event", 35, 18, COLORS["white"], True))
         content.add_widget(featured)
 
+        submission = Card(
+            size_hint_y=None,
+            height=dp(104),
+            padding=dp(12),
+            spacing=dp(8),
+            background=COLORS["mint"],
+        )
+        submission_copy = BoxLayout(orientation="vertical")
+        submission_copy.add_widget(label("PUNYA MOMEN MENARIK?", 28, 11, COLORS["forest"], True))
+        submission_copy.add_widget(label("Kirim foto Anda untuk ditinjau pengelola.", 34, 9, COLORS["muted"]))
+        submission.add_widget(submission_copy)
+        submission_button = PrimaryButton(text="Kirim Foto", size_hint_x=None, width=dp(104), height=dp(42))
+        submission_button.bind(on_release=lambda *_: self.open_gallery_submission())
+        submission.add_widget(submission_button)
+        content.add_widget(submission)
+
         content.add_widget(section_heading("Foto pilihan", "Jelajahi momen Pemancingan Adem Ayem Dlopo"))
         filters = BoxLayout(size_hint_y=None, height=dp(38), spacing=dp(5))
         self.gallery_filter_buttons = {}
@@ -1625,6 +1666,128 @@ class FishingMVPApp(App):
         close_button.bind(on_release=popup.dismiss)
         popup.open()
 
+    def build_gallery_submit(self):
+        screen = Screen(name="gallery_submit")
+        scroll, content = page_content(padding=(14, 12, 14, 28), spacing=10)
+        content.add_widget(
+            self.section_header(
+                "Kirim Foto Galeri",
+                "Bagikan tangkapan dan momen terbaik Anda",
+                "gallery",
+            )
+        )
+        content.add_widget(
+            self.info_card(
+                "Ditinjau sebelum tampil",
+                "Foto pengguna akan diperiksa admin terlebih dahulu. Foto yang disetujui otomatis muncul di Galeri publik.",
+                128,
+                COLORS["mint"],
+            )
+        )
+        content.add_widget(label("Judul foto", 24, 11, COLORS["forest"], True))
+        self.user_gallery_title = StyledTextInput(
+            hint_text="Contoh: Strike nila di Lapak 27", multiline=False
+        )
+        content.add_widget(self.user_gallery_title)
+        content.add_widget(label("Kategori", 24, 11, COLORS["forest"], True))
+        self.user_gallery_category = StyledSpinner(
+            text="Tangkapan", values=("Event", "Tangkapan", "Momen", "Kolam")
+        )
+        content.add_widget(self.user_gallery_category)
+        self.admin_user_gallery_image = None
+        self.admin_user_gallery_image_label = label(
+            "Belum ada foto dipilih", 34, 9, COLORS["muted"], False, "center"
+        )
+        content.add_widget(self.admin_user_gallery_image_label)
+        choose = GhostButton(text="Pilih Foto dari Perangkat")
+        choose.bind(on_release=lambda *_: self.choose_content_image("user_gallery"))
+        content.add_widget(choose)
+        submit = PrimaryButton(text="Kirim untuk Ditinjau")
+        submit.bind(on_release=lambda *_: self.submit_user_gallery())
+        content.add_widget(submit)
+        content.add_widget(section_heading("Kiriman saya", "Pantau hasil pemeriksaan admin"))
+        self.user_gallery_submission_list = BoxLayout(
+            orientation="vertical", size_hint_y=None, spacing=dp(8)
+        )
+        self.user_gallery_submission_list.bind(
+            minimum_height=self.user_gallery_submission_list.setter("height")
+        )
+        content.add_widget(self.user_gallery_submission_list)
+        screen.add_widget(scroll)
+        return screen
+
+    def open_gallery_submission(self):
+        if not self.current_user:
+            self.pending_after_login_screen = "gallery_submit"
+            self.auth_context_label.text = "Masuk untuk mengirim foto ke galeri pemancingan."
+            self.go("auth")
+            return
+        self.refresh_user_gallery_submissions()
+        self.go("gallery_submit")
+
+    def submit_user_gallery(self):
+        if not self.current_user:
+            self.open_gallery_submission()
+            return
+        title = self.user_gallery_title.text.strip()
+        image_path = self.admin_user_gallery_image
+        if len(title) < 3 or not image_path:
+            self.show_message("Kiriman belum lengkap", "Isi judul dan pilih foto terlebih dahulu.")
+            return
+        self.database.create_gallery_item(
+            title,
+            self.user_gallery_category.text,
+            image_path,
+            actor=f'user:{self.current_user["username"]}',
+            user_id=self.current_user["id"],
+            submitted_by=self.current_user["full_name"],
+            approved=False,
+        )
+        self.user_gallery_title.text = ""
+        self.admin_user_gallery_image = None
+        self.admin_user_gallery_image_label.text = "Belum ada foto dipilih"
+        self.refresh_user_gallery_submissions()
+        self.show_message(
+            "Foto berhasil dikirim",
+            "Kiriman berstatus menunggu dan akan tampil setelah disetujui admin.",
+        )
+
+    def refresh_user_gallery_submissions(self):
+        if not hasattr(self, "user_gallery_submission_list"):
+            return
+        self.user_gallery_submission_list.clear_widgets()
+        if not self.current_user:
+            return
+        items = self.database.list_gallery_items(
+            active_only=False, user_id=self.current_user["id"]
+        )
+        status_labels = {
+            "pending": "MENUNGGU PEMERIKSAAN",
+            "approved": "SUDAH TAYANG",
+            "rejected": "TIDAK DISETUJUI",
+        }
+        if not items:
+            self.user_gallery_submission_list.add_widget(
+                self.info_card("Belum ada kiriman", "Foto yang Anda kirim akan muncul di sini.", 112)
+            )
+            return
+        for item in items:
+            card = Card(size_hint_y=None, height=dp(88), padding=dp(8), spacing=dp(8))
+            card.add_widget(
+                Image(source=media_source(item["image_path"]), size_hint_x=0.27, fit_mode="cover")
+            )
+            status = status_labels.get(item["moderation_status"], item["moderation_status"].upper())
+            card.add_widget(
+                label(
+                    f'{item["title"]}\n{item["category"]} | {status}',
+                    68,
+                    10,
+                    COLORS["forest"],
+                    True,
+                )
+            )
+            self.user_gallery_submission_list.add_widget(card)
+
     def section_header(self, title, subtitle, back_target):
         wrapper = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(146), spacing=dp(7))
         back = GhostButton(text="< Kembali", size_hint_x=0.34, height=dp(34))
@@ -1656,10 +1819,13 @@ class FishingMVPApp(App):
         content.add_widget(periods)
 
         champion = Card(orientation="vertical", size_hint_y=None, height=dp(330), padding=dp(7), spacing=dp(3), background=COLORS["deep_forest"])
-        champion.add_widget(Image(source=asset("leaderboard-champion.png"), fit_mode="cover"))
+        self.leaderboard_champion_image = Image(source=media_source(LEADERBOARD_ENTRIES[0]["image"]), fit_mode="cover")
+        champion.add_widget(self.leaderboard_champion_image)
         champion.add_widget(label("#1 REKOR TERBERAT", 18, 8, COLORS["sand"], True))
-        champion.add_widget(label("3.82 KG | Satria Wibowo", 35, 20, COLORS["white"], True))
-        champion.add_widget(label("Grand Mix Babaon | Lapak 27", 20, 9, COLORS["mint"]))
+        self.leaderboard_champion_title = label("3.82 KG | Satria Wibowo", 35, 20, COLORS["white"], True)
+        self.leaderboard_champion_meta = label("Grand Mix Babaon | Lapak 27", 20, 9, COLORS["mint"])
+        champion.add_widget(self.leaderboard_champion_title)
+        champion.add_widget(self.leaderboard_champion_meta)
         content.add_widget(champion)
 
         summary = BoxLayout(size_hint_y=None, height=dp(88), spacing=dp(8))
@@ -1692,10 +1858,15 @@ class FishingMVPApp(App):
         self.leaderboard_people.value_label.text = str(len(entries))
         self.leaderboard_fish.value_label.text = str(sum(entry["count"] for entry in entries))
         self.leaderboard_list.clear_widgets()
+        if entries:
+            champion = entries[0]
+            self.leaderboard_champion_image.source = media_source(champion["image"])
+            self.leaderboard_champion_title.text = f'{champion["biggest"]:.2f} KG | {champion["name"]}'
+            self.leaderboard_champion_meta.text = f'{champion["event"]} | {champion["spot"]}'
         for rank, entry in enumerate(entries, start=1):
             row = Card(size_hint_y=None, height=dp(88), padding=dp(8), spacing=dp(8), background=COLORS["white"] if rank > 1 else (1, 0.976, 0.91, 1))
             row.add_widget(label(f"#{rank}", 66, 15, COLORS["terracotta"] if rank > 1 else COLORS["forest"], True, "center"))
-            row.add_widget(Image(source=asset(entry["image"]), size_hint_x=None, width=dp(58), fit_mode="cover"))
+            row.add_widget(Image(source=media_source(entry["image"]), size_hint_x=None, width=dp(58), fit_mode="cover"))
             copy = BoxLayout(orientation="vertical", spacing=dp(0))
             copy.add_widget(label(entry["name"], 28, 12, COLORS["forest"], True))
             copy.add_widget(label(entry["event"], 20, 8, COLORS["muted"]))
@@ -2068,15 +2239,44 @@ class FishingMVPApp(App):
             if previous:
                 previous.focus_next = field
             previous = field
+        terms_row = Card(
+            size_hint_y=None,
+            height=dp(76),
+            padding=dp(10),
+            spacing=dp(7),
+            background=COLORS["mint"],
+        )
+        self.register_terms_checkbox = CheckBox(
+            size_hint_x=None, width=dp(38), color=COLORS["forest"]
+        )
+        terms_row.add_widget(self.register_terms_checkbox)
+        terms_row.add_widget(
+            label(
+                "Saya menyetujui Privasi & Ketentuan aplikasi.",
+                54,
+                10,
+                COLORS["forest"],
+                True,
+            )
+        )
+        read_terms = GhostButton(text="Baca", size_hint_x=None, width=dp(68), height=dp(38))
+        read_terms.bind(on_release=lambda *_: self.show_registration_terms())
+        terms_row.add_widget(read_terms)
+        content.add_widget(terms_row)
         create_button = PrimaryButton(text="Buat Akun & Masuk")
         create_button.bind(on_release=lambda *_: self.register_user())
         self.register_password_confirm.bind(
             on_text_validate=lambda *_: self.register_user()
         )
         content.add_widget(create_button)
-        content.add_widget(label("Dengan membuat akun, Anda menyetujui Privasi & Ketentuan aplikasi.", 48, 10, COLORS["muted"], False, "center"))
         screen.add_widget(scroll)
         return screen
+
+    def show_registration_terms(self):
+        self.show_message(
+            "Privasi & Ketentuan",
+            "Aplikasi menyimpan identitas akun, nomor WhatsApp, tiket, foto profil, dan aktivitas pemesanan untuk operasional Pemancingan Adem Ayem Dlopo. Satu tiket berlaku untuk satu lapak dan pengguna wajib memberikan data yang benar.",
+        )
 
     def login_user(self):
         username = self.login_username.text.strip()
@@ -2109,6 +2309,12 @@ class FishingMVPApp(App):
         if len(password) < 8 or password != confirmation:
             self.show_message("Password belum valid", "Gunakan minimal 8 karakter dan pastikan kedua password sama.")
             return
+        if not self.register_terms_checkbox.active:
+            self.show_message(
+                "Persetujuan diperlukan",
+                "Baca dan setujui Privasi & Ketentuan sebelum membuat akun.",
+            )
+            return
         try:
             user = self.database.create_user(username, password, full_name, phone)
         except AccountExistsError as error:
@@ -2122,6 +2328,7 @@ class FishingMVPApp(App):
             self.register_password_confirm,
         ):
             field.text = ""
+        self.register_terms_checkbox.active = False
         self.complete_login(user)
 
     @staticmethod
@@ -2134,8 +2341,14 @@ class FishingMVPApp(App):
         self.refresh_profile()
         pending_event = self.pending_booking_event_id
         self.pending_booking_event_id = None
+        pending_screen = self.pending_after_login_screen
+        self.pending_after_login_screen = None
         if pending_event:
             self.start_booking(pending_event)
+        elif pending_screen:
+            self.go(pending_screen)
+            if pending_screen == "gallery_submit":
+                self.refresh_user_gallery_submissions()
         else:
             self.go("profile")
 
@@ -2144,11 +2357,13 @@ class FishingMVPApp(App):
         self.session_bookings = []
         self.current_ticket_booking = None
         self.pending_booking_event_id = None
+        self.pending_after_login_screen = None
         self.refresh_profile()
         self.go("profile")
 
     def continue_as_guest(self):
         self.pending_booking_event_id = None
+        self.pending_after_login_screen = None
         self.go("home")
 
     def open_user_orders(self):
@@ -2189,6 +2404,11 @@ class FishingMVPApp(App):
         copy.add_widget(self.profile_name_label)
         copy.add_widget(self.profile_username_label)
         copy.add_widget(self.profile_phone_label)
+        self.profile_photo_button = GhostButton(
+            text="Tambah Foto Profil", height=dp(34), size_hint_x=0.72
+        )
+        self.profile_photo_button.bind(on_release=lambda *_: self.open_account_settings())
+        copy.add_widget(self.profile_photo_button)
         identity.add_widget(copy)
         hero.add_widget(identity)
         content.add_widget(hero)
@@ -2259,7 +2479,7 @@ class FishingMVPApp(App):
         avatar_card = Card(
             orientation="vertical",
             size_hint_y=None,
-            height=dp(210),
+            height=dp(252),
             padding=dp(12),
             spacing=dp(8),
             background=COLORS["mint"],
@@ -2272,9 +2492,23 @@ class FishingMVPApp(App):
             background=COLORS["terracotta"],
         )
         avatar_card.add_widget(self.edit_avatar_preview)
-        choose_photo = GhostButton(text="Pilih Foto dari Perangkat", height=dp(40))
+        self.avatar_change_status = label(
+            "Gunakan foto yang jelas dan sopan.",
+            26,
+            9,
+            COLORS["muted"],
+            False,
+            "center",
+        )
+        avatar_card.add_widget(self.avatar_change_status)
+        avatar_actions = BoxLayout(size_hint_y=None, height=dp(42), spacing=dp(7))
+        choose_photo = PrimaryButton(text="Tambah / Ganti Foto", height=dp(40))
         choose_photo.bind(on_release=lambda *_: self.choose_profile_photo())
-        avatar_card.add_widget(choose_photo)
+        self.remove_avatar_button = GhostButton(text="Hapus Foto", height=dp(40))
+        self.remove_avatar_button.bind(on_release=lambda *_: self.remove_profile_photo())
+        avatar_actions.add_widget(choose_photo)
+        avatar_actions.add_widget(self.remove_avatar_button)
+        avatar_card.add_widget(avatar_actions)
         content.add_widget(avatar_card)
         for title, attribute, hint, input_filter in (
             ("Nama lengkap", "edit_full_name", "Nama lengkap", None),
@@ -2318,6 +2552,14 @@ class FishingMVPApp(App):
         self.edit_username.text = self.current_user["username"]
         self.edit_phone.text = self.current_user["phone"]
         self.pending_avatar_path = self.current_user.get("avatar_path")
+        self.original_avatar_path = self.pending_avatar_path
+        self.remove_avatar_button.disabled = not bool(self.pending_avatar_path)
+        self.remove_avatar_button.opacity = 1 if self.pending_avatar_path else 0.45
+        self.avatar_change_status.text = (
+            "Foto saat ini tersimpan pada akun Anda."
+            if self.pending_avatar_path
+            else "Belum ada foto. Tambahkan foto dari perangkat."
+        )
         self.render_avatar(
             self.edit_avatar_preview,
             self.pending_avatar_path,
@@ -2373,6 +2615,9 @@ class FishingMVPApp(App):
                 )
                 return
             self.pending_avatar_path = destination
+            self.remove_avatar_button.disabled = False
+            self.remove_avatar_button.opacity = 1
+            self.avatar_change_status.text = "Foto baru siap disimpan."
             self.render_avatar(
                 self.edit_avatar_preview,
                 destination,
@@ -2383,6 +2628,21 @@ class FishingMVPApp(App):
 
         select_button.bind(on_release=select)
         popup.open()
+
+    def remove_profile_photo(self):
+        if not self.current_user:
+            self.go("auth")
+            return
+        self.pending_avatar_path = None
+        self.remove_avatar_button.disabled = True
+        self.remove_avatar_button.opacity = 0.45
+        self.avatar_change_status.text = "Foto akan dihapus setelah perubahan disimpan."
+        self.render_avatar(
+            self.edit_avatar_preview,
+            None,
+            self.edit_full_name.text or self.current_user["full_name"],
+            96,
+        )
 
     def save_profile(self):
         if not self.current_user:
@@ -2410,7 +2670,10 @@ class FishingMVPApp(App):
             return
         self.refresh_profile()
         self.go("profile")
-        self.show_message("Profil diperbarui", "Perubahan akun berhasil disimpan.")
+        self.show_message(
+            "Profil diperbarui",
+            "Data akun dan foto profil berhasil disimpan.",
+        )
 
     def render_avatar(self, container, avatar_path, full_name, size=82):
         container.clear_widgets()
@@ -2558,6 +2821,7 @@ class FishingMVPApp(App):
             self.profile_ticket_meta.text = "Jelajah aplikasi tetap bebas tanpa akun"
             self.profile_ticket_code.text = "AKUN DIPERLUKAN SAAT BOOKING"
             self.profile_ticket_button.text = "Masuk atau Buat Akun"
+            self.profile_photo_button.text = "Masuk untuk Tambah Foto"
             return
 
         self.profile_account_badge.text = "AKUN AKTIF"
@@ -2568,6 +2832,11 @@ class FishingMVPApp(App):
             self.profile_avatar,
             self.current_user.get("avatar_path"),
             self.current_user["full_name"],
+        )
+        self.profile_photo_button.text = (
+            "Ganti Foto Profil"
+            if self.current_user.get("avatar_path")
+            else "Tambah Foto Profil"
         )
         active_bookings = [
             booking
@@ -2635,6 +2904,16 @@ class FishingMVPApp(App):
             metric.add_widget(label(caption, 30, 9, COLORS["muted"], False, "center"))
             metrics.add_widget(metric)
         content.add_widget(metrics)
+        self.admin_health_card = Card(
+            size_hint_y=None,
+            height=dp(68),
+            padding=dp(11),
+            background=COLORS["mint"] if self.database_health["healthy"] else COLORS["coral"],
+        )
+        self.admin_health_label = label("-", 48, 10, COLORS["forest"], True, "center")
+        self.admin_health_card.add_widget(self.admin_health_label)
+        content.add_widget(self.admin_health_card)
+        self.refresh_admin_health()
         content.add_widget(section_heading("Akses pengelolaan", "Pilih data operasional yang akan diperbarui"))
         for title, subtitle, action in (
             ("Kelola Operasional", "Jam buka, mood ikan, dan pelepasan nila", lambda: self.go("operations")),
@@ -2643,7 +2922,9 @@ class FishingMVPApp(App):
             ("Backup Database", "Buat salinan aman seluruh data lokal", lambda: self.create_database_backup()),
             ("Kelola Event & Jadwal", "Tambah, ubah, terbitkan, atau arsipkan event", lambda: self.open_admin_events()),
             ("Kelola Galeri", "Unggah foto baru langsung dari perangkat", lambda: self.open_admin_gallery()),
+            ("Kelola Peringkat", "Tambah dan edit hasil tangkapan terverifikasi", lambda: self.open_admin_leaderboard()),
             ("Kelola Berita", "Terbitkan pengumuman dan kabar kolam", lambda: self.open_admin_news()),
+            ("Kunci Admin", "Akhiri sesi pengelola pada perangkat ini", lambda: self.lock_admin()),
         ):
             card = Card(size_hint_y=None, height=dp(82), padding=dp(11), spacing=dp(8))
             copy = BoxLayout(orientation="vertical")
@@ -2657,6 +2938,15 @@ class FishingMVPApp(App):
         screen.add_widget(scroll)
         return screen
 
+    def lock_admin(self):
+        self.admin_authenticated = False
+        self.orders_admin_mode = False
+        self.go("info")
+        self.show_message(
+            "Admin dikunci",
+            "PIN pengelola harus dimasukkan kembali untuk membuka Dashboard Admin.",
+        )
+
     def total_release_text(self):
         total = 0
         for event in EVENTS.values():
@@ -2669,11 +2959,27 @@ class FishingMVPApp(App):
             self.admin_event_metric.text = str(len(EVENTS))
             self.admin_release_metric.text = self.total_release_text()
 
+    def refresh_admin_health(self):
+        if not hasattr(self, "admin_health_label"):
+            return
+        self.database_health = self.database.health_check()
+        counts = self.database_health["counts"]
+        if self.database_health["healthy"]:
+            self.admin_health_label.text = (
+                f'DATABASE SEHAT | {counts["events"]} event | '
+                f'{counts["bookings"]} booking | {counts["users"]} akun'
+            )
+            self.admin_health_card.card_color.rgba = COLORS["mint"]
+        else:
+            self.admin_health_label.text = "PERIKSA DATABASE SEBELUM OPERASIONAL"
+            self.admin_health_card.card_color.rgba = COLORS["coral"]
+
     def build_admin_events(self):
         screen = Screen(name="admin_events")
         scroll, content = page_content(padding=(14, 12, 14, 28), spacing=10)
+        self.admin_events_scroll = scroll
         content.add_widget(self.section_header("Kelola Event", "Jadwal dan tiket tersimpan ke database", "admin"))
-        content.add_widget(section_heading("Form event", "Kosongkan untuk membuat event baru"))
+        content.add_widget(section_heading("Form event", "Pilih Edit Data pada daftar untuk memperbarui event"))
         self.admin_event_mode = label("EVENT BARU", 28, 11, COLORS["terracotta"], True)
         content.add_widget(self.admin_event_mode)
         self.admin_event_inputs = {}
@@ -2703,10 +3009,10 @@ class FishingMVPApp(App):
         event_actions = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(8))
         reset_button = GhostButton(text="Form Baru")
         reset_button.bind(on_release=lambda *_: self.reset_event_form())
-        save_button = PrimaryButton(text="Simpan & Terbitkan")
-        save_button.bind(on_release=lambda *_: self.save_admin_event())
+        self.admin_event_save_button = PrimaryButton(text="Simpan Event Baru")
+        self.admin_event_save_button.bind(on_release=lambda *_: self.save_admin_event())
         event_actions.add_widget(reset_button)
-        event_actions.add_widget(save_button)
+        event_actions.add_widget(self.admin_event_save_button)
         content.add_widget(event_actions)
         content.add_widget(section_heading("Daftar event", "Perubahan langsung tampil pada menu Agenda"))
         self.admin_event_list = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(9))
@@ -2731,6 +3037,7 @@ class FishingMVPApp(App):
         self.admin_event_inputs["available"].disabled = False
         self.admin_event_image = None
         self.admin_event_image_label.text = "Belum ada foto dipilih"
+        self.admin_event_save_button.text = "Simpan Event Baru"
 
     def edit_admin_event(self, event):
         self.editing_event_id = event["event_id"]
@@ -2742,9 +3049,11 @@ class FishingMVPApp(App):
         digits = "".join(character for character in event["release"] if character.isdigit())
         self.admin_event_inputs["release_kg"].text = digits
         self.admin_event_inputs["available"].text = str(event["available"])
-        self.admin_event_inputs["available"].disabled = True
+        self.admin_event_inputs["available"].disabled = False
         self.admin_event_image = event["image"]
         self.admin_event_image_label.text = os.path.basename(event["image"])
+        self.admin_event_save_button.text = "Simpan Perubahan Event"
+        Clock.schedule_once(lambda *_: setattr(self.admin_events_scroll, "scroll_y", 1), 0)
 
     def save_admin_event(self):
         values = {key: field.text.strip() for key, field in self.admin_event_inputs.items()}
@@ -2767,7 +3076,7 @@ class FishingMVPApp(App):
         payload = {
             "title": values["title"], "date": values["date"], "time": values["time"],
             "price": price, "quota": 82, "release": f"Pelepasan nila {release_kg} kg",
-            "image": self.admin_event_image,
+            "image": self.admin_event_image, "available": available,
         }
         try:
             if getattr(self, "editing_event_id", None):
@@ -2799,7 +3108,7 @@ class FishingMVPApp(App):
             card.add_widget(label(f'{event["date"]} | {event["time"]}', 24, 9, COLORS["muted"]))
             card.add_widget(label(f'{event["release"]} | {rupiah(event["price"])} | {event["available"]}/82 lapak', 24, 9, COLORS["terracotta"], True))
             actions = BoxLayout(size_hint_y=None, height=dp(38), spacing=dp(7))
-            edit = GhostButton(text="Edit", height=dp(36))
+            edit = GhostButton(text="Edit Data", height=dp(36))
             edit.bind(on_release=lambda _button, item=event: self.edit_admin_event(item))
             toggle = PrimaryButton(text="Arsipkan" if event["is_active"] else "Terbitkan", height=dp(36))
             toggle.bind(on_release=lambda _button, item=event: self.toggle_event_active(item))
@@ -2855,7 +3164,13 @@ class FishingMVPApp(App):
         if len(title) < 3 or not self.admin_gallery_image:
             self.show_message("Foto belum lengkap", "Isi judul dan pilih foto terlebih dahulu.")
             return
-        self.database.create_gallery_item(title, self.admin_gallery_category.text, self.admin_gallery_image)
+        self.database.create_gallery_item(
+            title,
+            self.admin_gallery_category.text,
+            self.admin_gallery_image,
+            submitted_by="Admin",
+            approved=True,
+        )
         self.admin_gallery_title.text = ""
         self.admin_gallery_image = None
         self.admin_gallery_image_label.text = "Belum ada foto dipilih"
@@ -2868,18 +3183,219 @@ class FishingMVPApp(App):
             return
         self.admin_gallery_list.clear_widgets()
         for item in self.database.list_gallery_items(active_only=False):
-            card = Card(size_hint_y=None, height=dp(92), padding=dp(8), spacing=dp(8))
-            card.add_widget(Image(source=media_source(item["image_path"]), size_hint_x=0.28, fit_mode="cover"))
-            card.add_widget(label(f'{item["title"]}\n{item["category"]} | {"TERBIT" if item["is_active"] else "ARSIP"}', 70, 11, COLORS["forest"], True))
-            toggle = GhostButton(text="Arsipkan" if item["is_active"] else "Terbitkan", size_hint_x=0.31, height=dp(38))
-            toggle.bind(on_release=lambda _button, row=item: self.toggle_gallery_active(row))
-            card.add_widget(toggle)
+            card = Card(size_hint_y=None, height=dp(126), padding=dp(8), spacing=dp(8))
+            card.add_widget(Image(source=media_source(item["image_path"]), size_hint_x=0.25, fit_mode="cover"))
+            copy = BoxLayout(orientation="vertical", spacing=dp(2))
+            status = item["moderation_status"].upper()
+            copy.add_widget(label(item["title"], 28, 12, COLORS["forest"], True))
+            copy.add_widget(label(f'{item["category"]} | Oleh: {item["submitted_by"]}', 24, 8, COLORS["muted"]))
+            copy.add_widget(label(status, 22, 8, COLORS["terracotta"], True))
+            actions = BoxLayout(size_hint_y=None, height=dp(36), spacing=dp(6))
+            if item["moderation_status"] == "pending":
+                approve = PrimaryButton(text="Setujui", height=dp(34))
+                approve.bind(on_release=lambda _button, row=item: self.moderate_gallery(row, "approved"))
+                reject = GhostButton(text="Tolak", height=dp(34))
+                reject.bind(on_release=lambda _button, row=item: self.moderate_gallery(row, "rejected"))
+                actions.add_widget(approve)
+                actions.add_widget(reject)
+            elif item["moderation_status"] == "rejected":
+                approve = PrimaryButton(text="Setujui", height=dp(34))
+                approve.bind(on_release=lambda _button, row=item: self.moderate_gallery(row, "approved"))
+                actions.add_widget(approve)
+            else:
+                toggle = GhostButton(text="Arsipkan" if item["is_active"] else "Terbitkan", height=dp(34))
+                toggle.bind(on_release=lambda _button, row=item: self.toggle_gallery_active(row))
+                actions.add_widget(toggle)
+            copy.add_widget(actions)
+            card.add_widget(copy)
             self.admin_gallery_list.add_widget(card)
+
+    def moderate_gallery(self, item, status):
+        self.database.moderate_gallery_item(item["id"], status)
+        self.reload_content_data(refresh_widgets=True)
+        self.refresh_admin_gallery()
+        self.show_message(
+            "Moderasi diperbarui",
+            "Foto sudah ditayangkan." if status == "approved" else "Foto tidak ditayangkan.",
+        )
 
     def toggle_gallery_active(self, item):
         self.database.set_gallery_active(item["id"], not bool(item["is_active"]))
         self.reload_content_data(refresh_widgets=True)
         self.refresh_admin_gallery()
+
+    def build_admin_leaderboard(self):
+        screen = Screen(name="admin_leaderboard")
+        scroll, content = page_content(padding=(14, 12, 14, 28), spacing=10)
+        self.admin_leaderboard_scroll = scroll
+        content.add_widget(
+            self.section_header(
+                "Kelola Peringkat",
+                "Catat hasil timbang ikan nila yang terverifikasi",
+                "admin",
+            )
+        )
+        self.admin_leaderboard_mode = label(
+            "ENTRI BARU", 28, 11, COLORS["terracotta"], True
+        )
+        content.add_widget(self.admin_leaderboard_mode)
+        self.admin_leaderboard_inputs = {}
+        for key, title, hint in (
+            ("name", "Nama pemancing", "Nama lengkap pemancing"),
+            ("event", "Nama event", "Contoh: Grand Mix Babaon"),
+            ("biggest", "Ikan terbesar (kg)", "Contoh: 3.82"),
+            ("total", "Total berat tangkapan (kg)", "Contoh: 12.4"),
+            ("count", "Jumlah ikan", "Contoh: 4"),
+            ("spot", "Nomor lapak", "Contoh: Lapak 27"),
+        ):
+            content.add_widget(label(title, 24, 11, COLORS["forest"], True))
+            field = StyledTextInput(hint_text=hint, multiline=False)
+            self.admin_leaderboard_inputs[key] = field
+            content.add_widget(field)
+        content.add_widget(label("Tampilkan pada periode", 24, 11, COLORS["forest"], True))
+        self.admin_leaderboard_periods = StyledSpinner(
+            text="Hari Ini, Per Event, Bulanan",
+            values=(
+                "Hari Ini, Per Event, Bulanan",
+                "Per Event, Bulanan",
+                "Hari Ini, Per Event",
+                "Per Event",
+                "Bulanan",
+            ),
+        )
+        content.add_widget(self.admin_leaderboard_periods)
+        self.admin_leaderboard_image = None
+        self.admin_leaderboard_image_label = label(
+            "Belum ada foto dipilih", 34, 9, COLORS["muted"], False, "center"
+        )
+        content.add_widget(self.admin_leaderboard_image_label)
+        choose = GhostButton(text="Pilih Foto Pemancing atau Tangkapan")
+        choose.bind(on_release=lambda *_: self.choose_content_image("leaderboard"))
+        content.add_widget(choose)
+        actions = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(8))
+        reset = GhostButton(text="Entri Baru")
+        reset.bind(on_release=lambda *_: self.reset_leaderboard_form())
+        self.admin_leaderboard_save = PrimaryButton(text="Simpan Peringkat")
+        self.admin_leaderboard_save.bind(on_release=lambda *_: self.save_leaderboard_entry())
+        actions.add_widget(reset)
+        actions.add_widget(self.admin_leaderboard_save)
+        content.add_widget(actions)
+        content.add_widget(
+            section_heading("Data peringkat", "Edit atau arsipkan hasil timbang")
+        )
+        self.admin_leaderboard_list = BoxLayout(
+            orientation="vertical", size_hint_y=None, spacing=dp(9)
+        )
+        self.admin_leaderboard_list.bind(
+            minimum_height=self.admin_leaderboard_list.setter("height")
+        )
+        content.add_widget(self.admin_leaderboard_list)
+        screen.add_widget(scroll)
+        return screen
+
+    def open_admin_leaderboard(self):
+        if not self.admin_authenticated:
+            self.request_admin_access()
+            return
+        self.refresh_admin_leaderboard()
+        self.go("admin_leaderboard")
+
+    def reset_leaderboard_form(self):
+        self.editing_leaderboard_id = None
+        self.admin_leaderboard_mode.text = "ENTRI BARU"
+        for field in self.admin_leaderboard_inputs.values():
+            field.text = ""
+        self.admin_leaderboard_periods.text = "Hari Ini, Per Event, Bulanan"
+        self.admin_leaderboard_image = None
+        self.admin_leaderboard_image_label.text = "Belum ada foto dipilih"
+        self.admin_leaderboard_save.text = "Simpan Peringkat"
+
+    def edit_leaderboard_entry(self, entry):
+        self.editing_leaderboard_id = entry["id"]
+        self.admin_leaderboard_mode.text = f'EDIT PERINGKAT #{entry["id"]}'
+        for key in ("name", "event", "spot"):
+            self.admin_leaderboard_inputs[key].text = str(entry[key])
+        self.admin_leaderboard_inputs["biggest"].text = str(entry["biggest"])
+        self.admin_leaderboard_inputs["total"].text = str(entry["total"])
+        self.admin_leaderboard_inputs["count"].text = str(entry["count"])
+        self.admin_leaderboard_periods.text = ", ".join(entry["periods"])
+        self.admin_leaderboard_image = entry["image"]
+        self.admin_leaderboard_image_label.text = os.path.basename(entry["image"])
+        self.admin_leaderboard_save.text = "Simpan Perubahan"
+        Clock.schedule_once(
+            lambda *_: setattr(self.admin_leaderboard_scroll, "scroll_y", 1), 0
+        )
+
+    def save_leaderboard_entry(self):
+        values = {
+            key: field.text.strip()
+            for key, field in self.admin_leaderboard_inputs.items()
+        }
+        if not all(values.values()) or not self.admin_leaderboard_image:
+            self.show_message("Data belum lengkap", "Lengkapi data timbang dan pilih foto.")
+            return
+        try:
+            biggest = float(values["biggest"].replace(",", "."))
+            total = float(values["total"].replace(",", "."))
+            count = int(values["count"])
+        except ValueError:
+            self.show_message("Angka belum valid", "Gunakan angka untuk berat dan jumlah ikan.")
+            return
+        if biggest <= 0 or total < biggest or count < 1:
+            self.show_message(
+                "Data timbang belum valid",
+                "Berat harus positif, total minimal sama dengan ikan terbesar, dan jumlah ikan minimal 1.",
+            )
+            return
+        payload = {
+            "name": values["name"], "event": values["event"],
+            "biggest": biggest, "total": total, "count": count,
+            "spot": values["spot"], "image": self.admin_leaderboard_image,
+            "periods": tuple(
+                value.strip() for value in self.admin_leaderboard_periods.text.split(",")
+            ),
+        }
+        if getattr(self, "editing_leaderboard_id", None):
+            self.database.update_leaderboard_entry(self.editing_leaderboard_id, payload)
+            message = "Data peringkat berhasil diperbarui."
+        else:
+            self.database.create_leaderboard_entry(payload)
+            message = "Hasil tangkapan baru masuk ke papan peringkat."
+        self.reset_leaderboard_form()
+        self.reload_content_data(refresh_widgets=True)
+        self.refresh_admin_leaderboard()
+        self.show_message("Peringkat tersimpan", message)
+
+    def refresh_admin_leaderboard(self):
+        if not hasattr(self, "admin_leaderboard_list"):
+            return
+        self.admin_leaderboard_list.clear_widgets()
+        for entry in self.database.list_leaderboard_entries(active_only=False):
+            card = Card(size_hint_y=None, height=dp(116), padding=dp(8), spacing=dp(8))
+            card.add_widget(Image(source=media_source(entry["image"]), size_hint_x=0.24, fit_mode="cover"))
+            copy = BoxLayout(orientation="vertical", spacing=dp(1))
+            copy.add_widget(label(entry["name"], 26, 12, COLORS["forest"], True))
+            copy.add_widget(label(f'{entry["biggest"]:.2f} kg | {entry["event"]}', 22, 9, COLORS["terracotta"], True))
+            copy.add_widget(label(f'{entry["spot"]} | {"AKTIF" if entry["is_active"] else "ARSIP"}', 20, 8, COLORS["muted"]))
+            actions = BoxLayout(size_hint_y=None, height=dp(34), spacing=dp(6))
+            edit = GhostButton(text="Edit", height=dp(32))
+            edit.bind(on_release=lambda _button, row=entry: self.edit_leaderboard_entry(row))
+            toggle = PrimaryButton(text="Arsipkan" if entry["is_active"] else "Aktifkan", height=dp(32))
+            toggle.bind(on_release=lambda _button, row=entry: self.toggle_leaderboard_active(row))
+            actions.add_widget(edit)
+            actions.add_widget(toggle)
+            copy.add_widget(actions)
+            card.add_widget(copy)
+            self.admin_leaderboard_list.add_widget(card)
+
+    def toggle_leaderboard_active(self, entry):
+        active = self.database.list_leaderboard_entries(active_only=True)
+        if entry["is_active"] and len(active) <= 1:
+            self.show_message("Peringkat tetap aktif", "Sisakan minimal satu data pada papan peringkat.")
+            return
+        self.database.set_leaderboard_active(entry["id"], not entry["is_active"])
+        self.reload_content_data(refresh_widgets=True)
+        self.refresh_admin_leaderboard()
 
     def build_admin_news(self):
         screen = Screen(name="admin_news")
@@ -3490,6 +4006,7 @@ class FishingMVPApp(App):
             self.refresh_profile()
         if screen_name == "admin":
             self.refresh_admin_metrics()
+            self.refresh_admin_health()
         self.manager.current = screen_name
         primary_screens = {"home", "events", "gallery", "leaderboard", "profile"}
         if hasattr(self, "navigation"):
@@ -3622,6 +4139,15 @@ class FishingMVPApp(App):
                 "Pesanan belum siap", "Pilih event dan lapak sebelum membuat tiket."
             )
             return
+        if (
+            self.payment_method.text != "Bayar di lokasi"
+            and not SIMULATED_PAYMENTS_ENABLED
+        ):
+            self.show_message(
+                "Pembayaran digital belum aktif",
+                "Pilih Bayar di lokasi. QRIS dan transfer akan dibuka setelah payment gateway resmi terhubung.",
+            )
+            return
         event = self.event_for(self.current_event_id)
         fee = 0 if self.payment_method.text == "Bayar di lokasi" else 2_500
         total = event["price"] + fee
@@ -3682,6 +4208,15 @@ class FishingMVPApp(App):
                 "Periksa kembali event, lapak, data pemesan, dan persetujuan aturan.",
             )
             return
+        if (
+            self.payment_method.text != "Bayar di lokasi"
+            and not SIMULATED_PAYMENTS_ENABLED
+        ):
+            self.show_message(
+                "Metode belum tersedia",
+                "Gunakan Bayar di lokasi untuk membuat tiket pada versi publik ini.",
+            )
+            return
         event = self.event_for(self.current_event_id)
 
         booking_code = "AA-" + uuid4().hex[:6].upper()
@@ -3702,7 +4237,11 @@ class FishingMVPApp(App):
             "spot_number": self.selected_spot,
             "bait_rule_accepted": True,
             "created_at": datetime.now().isoformat(timespec="seconds"),
-            "payment_reference": "SIM-" + uuid4().hex[:10].upper(),
+            "payment_reference": (
+                None
+                if method == "Bayar di lokasi"
+                else "SIM-" + uuid4().hex[:10].upper()
+            ),
             "user_id": self.current_user["id"],
         }
         self.pay_button.disabled = True

@@ -5,7 +5,7 @@ package.domain = id.ademayemdlopo
 source.dir = .
 source.include_exts = py,png,jpg,jpeg,kv,json,md
 source.exclude_dirs = .git,.venv,.python,.kivy,__pycache__,tests,wireframes,backups
-version = 1.1.0
+version = 1.2.0
 requirements = python3,kivy==2.3.1
 orientation = portrait
 fullscreen = 0

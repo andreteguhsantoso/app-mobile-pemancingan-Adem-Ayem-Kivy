@@ -24,6 +24,7 @@ class ScreenPreviewApp(FishingMVPApp):
             "edit_profile",
             "profile_member",
             "account_security",
+            "gallery_submit",
         ):
             self.current_user = {
                 "id": 999,
@@ -77,6 +78,12 @@ class ScreenPreviewApp(FishingMVPApp):
         elif self.preview_target == "admin_news":
             self.admin_authenticated = True
             self.open_admin_news()
+        elif self.preview_target == "admin_leaderboard":
+            self.admin_authenticated = True
+            self.open_admin_leaderboard()
+        elif self.preview_target == "gallery_submit":
+            self.refresh_user_gallery_submissions()
+            self.go("gallery_submit")
         elif self.preview_target != "home":
             self.go(self.preview_target)
         Clock.schedule_once(self.capture, 4.0)

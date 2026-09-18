@@ -2,7 +2,7 @@
 
 ## Status Saat Ini
 
-Versi Kivy 1.1.0 siap digunakan sebagai aplikasi operasional lokal atau kiosk pada satu perangkat. Versi ini belum boleh dipublikasikan sebagai aplikasi multi-pengguna melalui Play Store sebelum blocker eksternal pada bagian berikut diselesaikan.
+Versi Kivy 1.2.0 siap digunakan sebagai beta publik lokal, aplikasi operasional, atau kiosk pada satu perangkat. Versi ini belum boleh dipublikasikan sebagai aplikasi multi-pengguna melalui Play Store sebelum blocker eksternal pada bagian berikut diselesaikan.
 
 ## Sudah Siap
 
@@ -17,6 +17,13 @@ Versi Kivy 1.1.0 siap digunakan sebagai aplikasi operasional lokal atau kiosk pa
 - Halaman privasi dan ketentuan di dalam aplikasi.
 - Konfigurasi build Windows dan Android.
 - Smoke test UI dan pengujian database terisolasi.
+- Carousel Beranda menampilkan seluruh event aktif tanpa batas empat slide.
+- Event, galeri, berita, dan leaderboard dapat dikelola dari aplikasi.
+- Unggahan galeri pengguna memakai moderasi admin sebelum tampil publik.
+- Registrasi membutuhkan persetujuan Privasi & Ketentuan.
+- Mode rilis tidak mengizinkan pembayaran digital simulasi; pembayaran di lokasi menjadi pilihan aman.
+- Dashboard Admin menampilkan hasil pemeriksaan integritas SQLite dan dapat dikunci kembali.
+- Audit rilis dapat dijalankan melalui `release_check.py`.
 
 ## Blocker Sebelum Publik Multi-Pengguna
 
@@ -27,6 +34,7 @@ Versi Kivy 1.1.0 siap digunakan sebagai aplikasi operasional lokal atau kiosk pa
 5. QR tiket yang dapat dipindai serta aplikasi/operator check-in.
 6. Pengujian pada perangkat Android nyata, koneksi lambat, proses resume, dan kegagalan pembayaran.
 7. Signing key Android, akun Google Play Console, screenshot store, feature graphic, dan URL kebijakan privasi publik.
+8. Pemilih foto Android berbasis Storage Access Framework dan pengujian izin media pada Android 13+.
 
 ## Konfigurasi Admin Lokal
 
@@ -56,3 +64,12 @@ buildozer android debug
 ```
 
 Gunakan `buildozer android release` hanya setelah keystore, package ID final, kebijakan privasi, backend, dan payment gateway siap.
+
+## Audit Otomatis
+
+```powershell
+.\.venv\Scripts\python.exe release_check.py
+.\.venv\Scripts\python.exe release_check.py --strict-public
+```
+
+Perintah pertama memverifikasi kesiapan beta lokal, integritas database, aset wajib, dan konsistensi versi. Mode `--strict-public` juga mewajibkan konfigurasi backend HTTPS, payment gateway, dan URL kebijakan privasi.

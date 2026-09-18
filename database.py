@@ -38,7 +38,14 @@ class BookingDatabase:
         finally:
             connection.close()
 
-    def initialize(self, events, base_occupied, gallery_items=None, news_items=None):
+    def initialize(
+        self,
+        events,
+        base_occupied,
+        gallery_items=None,
+        news_items=None,
+        leaderboard_entries=None,
+    ):
         with self.connect() as connection:
             connection.execute("PRAGMA journal_mode = WAL")
             connection.executescript(
@@ -157,6 +164,22 @@ class BookingDatabase:
                     FOREIGN KEY(event_id) REFERENCES events(event_id)
                 );
 
+                CREATE TABLE IF NOT EXISTS leaderboard_entries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    seed_key TEXT UNIQUE,
+                    angler_name TEXT NOT NULL,
+                    event_name TEXT NOT NULL,
+                    biggest_weight REAL NOT NULL CHECK(biggest_weight > 0),
+                    total_weight REAL NOT NULL CHECK(total_weight > 0),
+                    fish_count INTEGER NOT NULL CHECK(fish_count > 0),
+                    spot_label TEXT NOT NULL,
+                    image_path TEXT NOT NULL,
+                    periods_text TEXT NOT NULL,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_bookings_created_at
                     ON bookings(created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_event_spots_status
@@ -169,9 +192,12 @@ class BookingDatabase:
                     ON gallery_items(is_active, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_news_active
                     ON news_items(is_active, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_leaderboard_active
+                    ON leaderboard_entries(is_active, biggest_weight DESC);
                 """
             )
             self._migrate_booking_columns(connection)
+            self._migrate_gallery_columns(connection)
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_bookings_user
@@ -245,6 +271,23 @@ class BookingDatabase:
                     ),
                 )
 
+            for index, entry in enumerate(leaderboard_entries or ()):
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO leaderboard_entries (
+                        seed_key, angler_name, event_name, biggest_weight,
+                        total_weight, fish_count, spot_label, image_path,
+                        periods_text, is_active, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                    """,
+                    (
+                        f"seed:leaderboard:{index}", entry["name"], entry["event"],
+                        float(entry["biggest"]), float(entry["total"]),
+                        int(entry["count"]), entry["spot"], entry["image"],
+                        "|".join(entry["periods"]), timestamp, timestamp,
+                    ),
+                )
+
             self._link_existing_bookings(connection, timestamp)
             connection.execute(
                 """
@@ -275,6 +318,22 @@ class BookingDatabase:
         connection.execute(
             "UPDATE bookings SET updated_at = created_at WHERE updated_at IS NULL"
         )
+
+    @staticmethod
+    def _migrate_gallery_columns(connection):
+        columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(gallery_items)")
+        }
+        additions = {
+            "user_id": "INTEGER",
+            "submitted_by": "TEXT NOT NULL DEFAULT 'Admin'",
+            "moderation_status": "TEXT NOT NULL DEFAULT 'approved'",
+        }
+        for name, definition in additions.items():
+            if name not in columns:
+                connection.execute(
+                    f"ALTER TABLE gallery_items ADD COLUMN {name} {definition}"
+                )
 
     @staticmethod
     def _link_existing_bookings(connection, timestamp):
@@ -387,6 +446,33 @@ class BookingDatabase:
     def update_event(self, event_id, event, actor="admin"):
         timestamp = datetime.now().isoformat(timespec="seconds")
         with self.connect() as connection:
+            current = connection.execute(
+                """
+                SELECT e.quota,
+                       SUM(CASE WHEN s.status = 'available' THEN 1 ELSE 0 END) AS available
+                FROM events e
+                LEFT JOIN event_spots s ON s.event_id = e.event_id
+                WHERE e.event_id = ?
+                GROUP BY e.event_id
+                """,
+                (event_id,),
+            ).fetchone()
+            if not current:
+                raise ValueError("Event tidak ditemukan.")
+            quota = current["quota"]
+            desired_available = int(event.get("available", current["available"] or 0))
+            booked_count = connection.execute(
+                """
+                SELECT COUNT(*) FROM event_spots
+                WHERE event_id = ? AND (booking_id IS NOT NULL OR source = 'booking')
+                """,
+                (event_id,),
+            ).fetchone()[0]
+            maximum_available = quota - booked_count
+            if desired_available < 0 or desired_available > maximum_available:
+                raise ValueError(
+                    f"Lapak tersedia harus 0-{maximum_available}; {booked_count} lapak sudah dibooking."
+                )
             cursor = connection.execute(
                 """
                 UPDATE events
@@ -402,6 +488,33 @@ class BookingDatabase:
             )
             if not cursor.rowcount:
                 raise ValueError("Event tidak ditemukan.")
+            connection.execute(
+                """
+                UPDATE event_spots
+                SET status = 'available', source = 'inventory', updated_at = ?
+                WHERE event_id = ? AND booking_id IS NULL AND source != 'booking'
+                """,
+                (timestamp, event_id),
+            )
+            initial_occupied_needed = quota - desired_available - booked_count
+            if initial_occupied_needed > 0:
+                rows = connection.execute(
+                    """
+                    SELECT spot_number FROM event_spots
+                    WHERE event_id = ? AND status = 'available'
+                    ORDER BY ((spot_number * 29 + 17) % 83), spot_number
+                    LIMIT ?
+                    """,
+                    (event_id, initial_occupied_needed),
+                ).fetchall()
+                connection.executemany(
+                    """
+                    UPDATE event_spots
+                    SET status = 'occupied', source = 'initial_event_data', updated_at = ?
+                    WHERE event_id = ? AND spot_number = ?
+                    """,
+                    [(timestamp, event_id, row["spot_number"]) for row in rows],
+                )
             self._write_audit(
                 connection, actor, "update", "event", event_id,
                 event["title"], timestamp,
@@ -421,28 +534,52 @@ class BookingDatabase:
             )
             connection.commit()
 
-    def list_gallery_items(self, active_only=True):
-        where = "WHERE is_active = 1" if active_only else ""
+    def list_gallery_items(self, active_only=True, user_id=None):
+        clauses = []
+        parameters = []
+        if active_only:
+            clauses.extend(("g.is_active = 1", "g.moderation_status = 'approved'"))
+        if user_id is not None:
+            clauses.append("g.user_id = ?")
+            parameters.append(user_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self.connect() as connection:
             rows = connection.execute(
                 f"""
-                SELECT id, title, category, image_path, is_active, created_at
-                FROM gallery_items {where}
-                ORDER BY id DESC
-                """
+                SELECT g.id, g.title, g.category, g.image_path, g.is_active,
+                       g.user_id, g.submitted_by, g.moderation_status,
+                       g.created_at, g.updated_at
+                FROM gallery_items g {where}
+                ORDER BY g.id DESC
+                """,
+                parameters,
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def create_gallery_item(self, title, category, image_path, actor="admin"):
+    def create_gallery_item(
+        self,
+        title,
+        category,
+        image_path,
+        actor="admin",
+        user_id=None,
+        submitted_by="Admin",
+        approved=True,
+    ):
         timestamp = datetime.now().isoformat(timespec="seconds")
+        moderation_status = "approved" if approved else "pending"
         with self.connect() as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO gallery_items (
-                    title, category, image_path, is_active, created_at, updated_at
-                ) VALUES (?, ?, ?, 1, ?, ?)
+                    title, category, image_path, is_active, user_id, submitted_by,
+                    moderation_status, created_at, updated_at
+                ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)
                 """,
-                (title, category, image_path, timestamp, timestamp),
+                (
+                    title, category, image_path, user_id, submitted_by,
+                    moderation_status, timestamp, timestamp,
+                ),
             )
             self._write_audit(
                 connection, actor, "create", "gallery", str(cursor.lastrowid),
@@ -450,6 +587,40 @@ class BookingDatabase:
             )
             connection.commit()
             return cursor.lastrowid
+
+    def update_gallery_item(self, item_id, title, category, actor="admin"):
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE gallery_items
+                SET title = ?, category = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (title, category, timestamp, item_id),
+            )
+            self._write_audit(
+                connection, actor, "update", "gallery", str(item_id), title, timestamp
+            )
+            connection.commit()
+
+    def moderate_gallery_item(self, item_id, status, actor="admin"):
+        if status not in {"pending", "approved", "rejected"}:
+            raise ValueError("Status moderasi galeri tidak valid.")
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE gallery_items
+                SET moderation_status = ?, is_active = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (status, 1 if status == "approved" else 0, timestamp, item_id),
+            )
+            self._write_audit(
+                connection, actor, "moderate", "gallery", str(item_id), status, timestamp
+            )
+            connection.commit()
 
     def set_gallery_active(self, item_id, active, actor="admin"):
         timestamp = datetime.now().isoformat(timespec="seconds")
@@ -461,6 +632,96 @@ class BookingDatabase:
             self._write_audit(
                 connection, actor, "activate" if active else "archive", "gallery",
                 str(item_id), None, timestamp,
+            )
+            connection.commit()
+
+    def list_leaderboard_entries(self, active_only=True):
+        where = "WHERE is_active = 1" if active_only else ""
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT id, angler_name, event_name, biggest_weight, total_weight,
+                       fish_count, spot_label, image_path, periods_text,
+                       is_active, created_at, updated_at
+                FROM leaderboard_entries
+                {where}
+                ORDER BY biggest_weight DESC, id ASC
+                """
+            ).fetchall()
+        return [
+            {
+                "id": row["id"], "name": row["angler_name"],
+                "event": row["event_name"], "biggest": row["biggest_weight"],
+                "total": row["total_weight"], "count": row["fish_count"],
+                "spot": row["spot_label"], "image": row["image_path"],
+                "periods": tuple(value for value in row["periods_text"].split("|") if value),
+                "is_active": bool(row["is_active"]), "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    def create_leaderboard_entry(self, entry, actor="admin"):
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        periods = entry.get("periods") or ("Per Event",)
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO leaderboard_entries (
+                    angler_name, event_name, biggest_weight, total_weight,
+                    fish_count, spot_label, image_path, periods_text,
+                    is_active, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                """,
+                (
+                    entry["name"], entry["event"], float(entry["biggest"]),
+                    float(entry["total"]), int(entry["count"]), entry["spot"],
+                    entry["image"], "|".join(periods), timestamp, timestamp,
+                ),
+            )
+            self._write_audit(
+                connection, actor, "create", "leaderboard", str(cursor.lastrowid),
+                entry["name"], timestamp,
+            )
+            connection.commit()
+            return cursor.lastrowid
+
+    def update_leaderboard_entry(self, entry_id, entry, actor="admin"):
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        periods = entry.get("periods") or ("Per Event",)
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE leaderboard_entries
+                SET angler_name = ?, event_name = ?, biggest_weight = ?,
+                    total_weight = ?, fish_count = ?, spot_label = ?,
+                    image_path = ?, periods_text = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    entry["name"], entry["event"], float(entry["biggest"]),
+                    float(entry["total"]), int(entry["count"]), entry["spot"],
+                    entry["image"], "|".join(periods), timestamp, entry_id,
+                ),
+            )
+            self._write_audit(
+                connection, actor, "update", "leaderboard", str(entry_id),
+                entry["name"], timestamp,
+            )
+            connection.commit()
+
+    def set_leaderboard_active(self, entry_id, active, actor="admin"):
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE leaderboard_entries
+                SET is_active = ?, updated_at = ? WHERE id = ?
+                """,
+                (1 if active else 0, timestamp, entry_id),
+            )
+            self._write_audit(
+                connection, actor, "activate" if active else "archive",
+                "leaderboard", str(entry_id), None, timestamp,
             )
             connection.commit()
 
@@ -989,6 +1250,25 @@ class BookingDatabase:
             ).fetchall()
         defaults.update({row["setting_key"]: row["setting_value"] for row in rows})
         return defaults
+
+    def health_check(self):
+        with self.connect() as connection:
+            quick_check = connection.execute("PRAGMA quick_check").fetchone()[0]
+            foreign_key_issues = connection.execute(
+                "PRAGMA foreign_key_check"
+            ).fetchall()
+            counts = {
+                table: connection.execute(
+                    f'SELECT COUNT(*) FROM "{table}"'
+                ).fetchone()[0]
+                for table in ("users", "events", "bookings", "gallery_items")
+            }
+        return {
+            "healthy": quick_check == "ok" and not foreign_key_issues,
+            "quick_check": quick_check,
+            "foreign_key_issues": len(foreign_key_issues),
+            "counts": counts,
+        }
 
     def backup(self, destination_directory):
         os.makedirs(destination_directory, exist_ok=True)
