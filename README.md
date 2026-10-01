@@ -63,6 +63,119 @@ Aplikasi Python/Kivy yang mengikuti tampilan, data, aset, dan alur utama versi E
 
 Umpan utama wajib berasal dari bahan alami. Media, bahan, atau umpan yang tidak berasal dari alam dilarang. Essen dan pemanis diperbolehkan hanya sebagai campuran umpan alami, bukan sebagai umpan utama.
 
+## Panduan Penggunaan Aplikasi
+
+Bagian ini ditujukan untuk pengguna aplikasi, bukan untuk pengembang.
+
+### Memulai aplikasi
+
+1. Buka aplikasi Pemancingan Adem Ayem Dlopo.
+2. Beranda dapat dibuka sebagai tamu untuk melihat event, galeri, berita, papan juara, informasi kolam, dan lokasi.
+3. Pilih `Akun` untuk mendaftar atau masuk. Login diperlukan saat membuat booking, mengirim foto, dan mengakses data pribadi.
+4. Pengguna yang sudah memiliki akun dapat memasukkan email dan password. Jika belum memiliki akun, pilih `Daftar`, lengkapi data, setujui Privasi & Ketentuan, lalu kirim formulir.
+
+### Beranda
+
+- Geser atau gunakan tombol panah pada carousel untuk melihat event yang tersedia.
+- Tekan kartu event untuk membuka detail tanggal, jam, harga, jumlah ikan, dan ketersediaan lapak.
+- Gunakan `Akses cepat` untuk menuju booking event, daftar lapak, galeri, atau peta lokasi.
+- Bagian `Jadwal terdekat` menampilkan event yang paling dekat waktunya.
+
+### Melihat event dan memilih lapak
+
+1. Buka `Agenda` atau pilih event dari Beranda.
+2. Tekan event yang ingin diikuti.
+3. Periksa tanggal, jam, harga, kuota, dan aturan event.
+4. Tekan tombol booking untuk membuka denah 82 lapak.
+5. Pilih lapak berwarna tersedia. Lapak yang sudah terisi tidak dapat dipilih.
+6. Lanjutkan ke formulir data peserta.
+
+### Membuat booking dan tiket
+
+1. Pastikan nama dan nomor WhatsApp peserta sudah benar.
+2. Tambahkan catatan jika diperlukan.
+3. Baca dan setujui aturan umpan.
+4. Pilih metode pembayaran yang tersedia: QRIS/e-wallet, transfer bank, atau `Bayar di lokasi`.
+5. Periksa kembali event, lapak, peserta, dan total biaya.
+6. Tekan tombol konfirmasi.
+7. Setelah berhasil, aplikasi menampilkan tiket digital beserta kode booking.
+
+Simpan kode booking dan tunjukkan tiket digital saat check-in. Jangan membagikan tiket kepada orang lain. Jika lapak sudah diambil pengguna lain, aplikasi akan menolak booking dan meminta Anda memilih lapak lain.
+
+### Melihat pesanan dan membatalkan booking
+
+- Buka `Akun > Pesanan Saya` untuk melihat tiket aktif dan riwayat booking.
+- Tekan tiket untuk melihat detail lengkap.
+- Booking yang belum dibayar dapat dibatalkan melalui tombol pembatalan.
+- Setelah pembatalan berhasil, lapak dikembalikan ke daftar tersedia sesuai aturan event.
+
+### Galeri dan pengiriman foto
+
+1. Buka tab `Momen` atau halaman `Galeri`.
+2. Gunakan filter kategori untuk menyaring foto event, tangkapan, kolam, atau momen.
+3. Tekan foto untuk melihat ukuran besar.
+4. Untuk mengirim foto, pilih `Kirim Foto` dan masuk ke akun terlebih dahulu.
+5. Pilih foto JPG, PNG, atau WEBP dari galeri perangkat.
+6. Isi judul foto, lalu kirim.
+
+Foto kiriman pengguna berstatus menunggu moderasi. Foto baru tampil di galeri publik setelah disetujui admin. Ukuran foto pengguna dibatasi 10 MB.
+
+### Papan juara dan berita
+
+- Buka tab `Juara` untuk melihat berat ikan terbesar, total berat, jumlah ikan, dan foto pemancing.
+- Gunakan filter `Hari Ini`, `Per Event`, atau `Bulanan` jika tersedia.
+- Buka tab `Berita` untuk membaca pengumuman, aturan, dan informasi kolam.
+- Tekan kartu berita untuk membuka isi lengkapnya.
+
+### Profil dan foto profil
+
+1. Buka tab `Akun`.
+2. Pilih `Pengaturan akun` untuk mengubah nama, username, atau nomor WhatsApp.
+3. Pilih `Tambah/Ganti Foto Profil`.
+4. Pilih foto dari galeri perangkat dan periksa pratinjau.
+5. Tekan `Simpan Perubahan Profil`.
+6. Gunakan `Hapus Foto` jika ingin kembali memakai inisial nama.
+
+Foto profil hanya menerima JPG, PNG, atau WEBP dengan ukuran maksimal 5 MB.
+
+### Panduan, lokasi, dan status kolam
+
+- Buka `Akun > Panduan & Lokasi` untuk membaca aturan memancing, fasilitas, informasi operasional, dan petunjuk lokasi.
+- Tekan tombol rute untuk membuka lokasi resmi di Google Maps:
+  https://maps.app.goo.gl/cQtnrkjTiAvC5JNC7
+- Halaman status menampilkan informasi operasional terbaru dari pengelola.
+
+### Peran admin
+
+Menu admin hanya untuk pengelola yang diberi peran `admin` atau `operator`.
+
+1. Buka `Akun > Panduan & Lokasi > Admin`.
+2. Pada penggunaan pertama, buat PIN pengelola minimal 6 angka.
+3. Masukkan PIN untuk membuka Dashboard Admin.
+4. Gunakan menu yang sesuai:
+   - `Kelola Event & Jadwal` untuk membuat, mengubah, menerbitkan, atau mengarsipkan event.
+   - `Kelola Galeri` untuk memoderasi foto kiriman pengguna.
+   - `Kelola Peringkat` untuk mengelola data papan juara.
+   - `Kelola Berita` untuk membuat pengumuman dan artikel.
+   - `Kelola Pengguna` untuk melihat akun atau mengubah status akun.
+   - `Operasional` untuk memperbarui status dan informasi kolam.
+5. Keluar atau kunci kembali dashboard admin setelah selesai.
+
+PIN disimpan sebagai hash di perangkat dan tidak ditulis ke source code. Jangan membagikan PIN kepada pengguna lain.
+
+### Koneksi online dan mode lokal
+
+Jika Supabase sudah dikonfigurasi, login, profil, media, konten publik, dan ketersediaan lapak dapat disinkronkan antarperangkat. Jika koneksi tidak tersedia, aplikasi masih dapat dibuka menggunakan data lokal/cache, tetapi perubahan online mungkin tertunda. Periksa koneksi internet dan konfigurasi `backend_config.json` jika muncul pesan backend belum tersedia.
+
+### Pemecahan masalah pengguna
+
+- **Tidak dapat masuk**: periksa email, password, koneksi internet, dan apakah email sudah dikonfirmasi.
+- **Profil belum muncul**: pastikan pendaftaran berhasil dan akun terlihat di Authentication Supabase.
+- **Foto tidak muncul di galeri**: pilih ulang foto melalui tombol pemilih gambar Android dan gunakan format JPG/PNG/WEBP.
+- **Booking ditolak**: lapak mungkin sudah diambil pengguna lain atau event sudah penuh.
+- **Tiket tidak terlihat**: buka `Akun > Pesanan Saya`, pastikan masuk menggunakan akun yang sama, lalu tunggu sinkronisasi selesai.
+- **Aplikasi terlihat tidak berubah**: tutup dan buka kembali aplikasi agar cache konten dimuat ulang.
+
 ## Menjalankan Aplikasi
 
 Virtual environment Python 3.13 dan Kivy sudah tersedia di proyek ini.
