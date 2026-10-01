@@ -1,7 +1,5 @@
 import hashlib
-import hmac
 import os
-import shutil
 import sqlite3
 import sys
 import webbrowser
@@ -38,13 +36,26 @@ from database import (
     BookingStateError,
     PasswordError,
 )
+from media_picker import (
+    AndroidImagePicker,
+    ImageSelectionError,
+    copy_local_image,
+    image_display_name,
+)
+from supabase_client import (
+    SupabaseClient,
+    SupabaseError,
+    SupabaseSettings,
+    run_async,
+)
+from backend_sync import EVENT_KEY_BY_REMOTE_ID, PublicBackendSync, parse_timestamp
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ASSET_DIR = os.path.join(BASE_DIR, "assets", "generated")
 DB_PATH = os.path.join(BASE_DIR, "mvp.db")
 GOOGLE_MAPS_URL = "https://maps.app.goo.gl/cQtnrkjTiAvC5JNC7"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 SIMULATED_PAYMENTS_ENABLED = os.environ.get(
     "ADEM_AYEM_ENABLE_SIMULATED_PAYMENTS", ""
 ).strip() == "1"
@@ -149,6 +160,15 @@ EVENTS = {
         "release": "Pelepasan nila 100 kg",
         "image": "hero-nila.png",
     },
+}
+
+# Stable IDs from the Kivy project's own Supabase seed migration.  Local screen
+# identifiers remain human-readable while reservations use UUID foreign keys.
+SUPABASE_EVENT_IDS = {
+    "NILA-GP": "00000000-0000-4000-8000-000000000225",
+    "NILA-200": "00000000-0000-4000-8000-000000000200",
+    "NILA-150": "00000000-0000-4000-8000-000000000150",
+    "NILA-100": "00000000-0000-4000-8000-000000000100",
 }
 
 
@@ -339,7 +359,11 @@ def label(text, height=dp(30), size=14, color=None, bold=False, halign="left"):
         text=text,
         size_hint_y=None,
         height=height,
-        font_size=f"{size}sp",
+        # Keep typography proportional to the card dimensions. Android's `sp`
+        # also applies the device font-scale setting, while every layout height
+        # in this app is expressed in `dp`; mixing the two caused text to grow
+        # outside its cards on devices using a larger system font.
+        font_size=dp(size),
         font_name=FONT_DISPLAY if bold else FONT_BODY,
         color=color or COLORS["ink"],
         bold=bold,
@@ -437,13 +461,22 @@ class PrimaryButton(Button):
         kwargs.setdefault("color", COLORS["white"])
         kwargs.setdefault("bold", True)
         kwargs.setdefault("font_name", FONT_DISPLAY)
+        kwargs.setdefault("font_size", dp(13))
+        kwargs.setdefault("halign", "center")
+        kwargs.setdefault("valign", "middle")
         super().__init__(**kwargs)
+        self.text_size = self.size
         self.resting_color = COLORS["terracotta"]
         self.pressed_color = (0.68, 0.22, 0.12, 1)
         with self.canvas.before:
             self.button_color = Color(*self.resting_color)
             self.button_rect = RoundedRectangle(pos=self.pos, size=self.size, radius=[dp(12)])
-        self.bind(pos=self._sync_canvas, size=self._sync_canvas, state=self._sync_state)
+        self.bind(
+            pos=self._sync_canvas,
+            size=self._sync_canvas,
+            state=self._sync_state,
+        )
+        self.bind(size=lambda instance, value: setattr(instance, "text_size", value))
 
     def _sync_canvas(self, *_args):
         self.button_rect.pos = self.pos
@@ -462,13 +495,22 @@ class GhostButton(Button):
         kwargs.setdefault("color", COLORS["forest"])
         kwargs.setdefault("bold", True)
         kwargs.setdefault("font_name", FONT_DISPLAY)
+        kwargs.setdefault("font_size", dp(12))
+        kwargs.setdefault("halign", "center")
+        kwargs.setdefault("valign", "middle")
         super().__init__(**kwargs)
+        self.text_size = self.size
         self.resting_color = COLORS["mint"]
         self.pressed_color = (0.66, 0.82, 0.72, 1)
         with self.canvas.before:
             self.button_color = Color(*self.resting_color)
             self.button_rect = RoundedRectangle(pos=self.pos, size=self.size, radius=[dp(12)])
-        self.bind(pos=self._sync_canvas, size=self._sync_canvas, state=self._sync_state)
+        self.bind(
+            pos=self._sync_canvas,
+            size=self._sync_canvas,
+            state=self._sync_state,
+        )
+        self.bind(size=lambda instance, value: setattr(instance, "text_size", value))
 
     def _sync_canvas(self, *_args):
         self.button_rect.pos = self.pos
@@ -484,10 +526,12 @@ class NavButton(Button):
         kwargs.setdefault("background_down", "")
         kwargs.setdefault("background_color", (0, 0, 0, 0))
         kwargs.setdefault("bold", True)
-        kwargs.setdefault("font_size", "10sp")
+        kwargs.setdefault("font_size", dp(9))
         kwargs.setdefault("font_name", FONT_DISPLAY)
         kwargs.setdefault("halign", "center")
+        kwargs.setdefault("valign", "middle")
         super().__init__(**kwargs)
+        self.text_size = self.size
         self.active = active
         with self.canvas.before:
             self.nav_color = Color(*(COLORS["mint"] if active else (0, 0, 0, 0)))
@@ -501,6 +545,7 @@ class NavButton(Button):
             )
         self.set_active(active)
         self.bind(pos=self._sync_canvas, size=self._sync_canvas)
+        self.bind(size=lambda instance, value: setattr(instance, "text_size", value))
 
     def _sync_canvas(self, *_args):
         self.nav_rect.pos = self.pos
@@ -529,7 +574,7 @@ class SpotButton(Button):
         kwargs.setdefault("background_color", (0, 0, 0, 0))
         kwargs.setdefault("color", COLORS["forest"])
         kwargs.setdefault("bold", True)
-        kwargs.setdefault("font_size", "10sp")
+        kwargs.setdefault("font_size", dp(10))
         kwargs.setdefault("font_name", FONT_DISPLAY)
         super().__init__(**kwargs)
         self.number = number
@@ -582,6 +627,7 @@ class StyledTextInput(TextInput):
         kwargs.setdefault("selection_color", (0.663, 0.843, 0.859, 0.55))
         kwargs.setdefault("write_tab", False)
         kwargs.setdefault("font_name", FONT_BODY)
+        kwargs.setdefault("font_size", dp(14))
         super().__init__(**kwargs)
         # TextInput renders glyphs in canvas.before. Insert the custom field first
         # so its white fill never covers typed text or the hint.
@@ -624,6 +670,7 @@ class StyledSpinner(Spinner):
         kwargs.setdefault("background_color", (0, 0, 0, 0))
         kwargs.setdefault("color", COLORS["forest"])
         kwargs.setdefault("font_name", FONT_DISPLAY)
+        kwargs.setdefault("font_size", dp(13))
         super().__init__(**kwargs)
         with self.canvas.before:
             self.spinner_color = Color(*COLORS["mint"])
@@ -689,6 +736,35 @@ def page_content(padding=(18, 18, 18, 30), spacing=14):
     return scroll, content
 
 
+def android_safe_insets():
+    """Return top/bottom system-bar space in Kivy pixels.
+
+    Android 15+ enforces edge-to-edge drawing for newly targeted apps. SDL/Kivy
+    therefore receives a viewport that can extend behind the status and
+    navigation bars. Reading Android's system dimensions keeps interactive
+    content out of those areas while retaining a conservative fallback.
+    """
+    if kivy_platform != "android":
+        return 0, 0
+    fallback = (dp(28), dp(30))
+    try:
+        from jnius import autoclass
+
+        activity = autoclass("org.kivy.android.PythonActivity").mActivity
+        resources = activity.getResources()
+
+        def system_dimension(name, default):
+            resource_id = resources.getIdentifier(name, "dimen", "android")
+            return float(resources.getDimensionPixelSize(resource_id)) if resource_id else default
+
+        return (
+            system_dimension("status_bar_height", fallback[0]),
+            system_dimension("navigation_bar_height", fallback[1]),
+        )
+    except Exception:
+        return fallback
+
+
 class FishingMVPApp(App):
     title = "Pemancingan Adem Ayem Dlopo"
     database_path = None
@@ -715,6 +791,18 @@ class FishingMVPApp(App):
         self.database.initialize(
             EVENTS, BASE_OCCUPIED, GALLERY_ITEMS, NEWS_ITEMS, LEADERBOARD_ENTRIES
         )
+        self.supabase_settings = SupabaseSettings.load(
+            os.path.join(self.user_data_dir, "backend_config.json"),
+            os.path.join(BASE_DIR, "backend_config.json"),
+        )
+        self.supabase = SupabaseClient(
+            self.supabase_settings,
+            self.user_data_dir,
+        )
+        self.public_backend_sync = PublicBackendSync(
+            self.supabase,
+            os.path.join(self.user_data_dir, "remote-media"),
+        )
         self.reload_content_data()
         self.current_user = None
         self.session_bookings = []
@@ -726,8 +814,13 @@ class FishingMVPApp(App):
         self.admin_authenticated = False
         self.selected_spot = None
         self.current_ticket_booking = None
+        self.android_image_picker = AndroidImagePicker()
 
-        root = BoxLayout(orientation="vertical")
+        safe_top, safe_bottom = android_safe_insets()
+        root = BoxLayout(
+            orientation="vertical",
+            padding=(0, safe_top, 0, safe_bottom),
+        )
         with root.canvas.before:
             Color(*COLORS["cream"])
             root.background_rect = Rectangle(pos=root.pos, size=root.size)
@@ -766,6 +859,10 @@ class FishingMVPApp(App):
         self.navigation = self.build_navigation()
         root.add_widget(self.navigation)
         self.hero_clock = Clock.schedule_interval(self.next_hero_slide, 5)
+        if self.supabase.configured and self.supabase.signed_in:
+            Clock.schedule_once(lambda *_: self.restore_online_session(), 0.25)
+        if self.supabase.configured:
+            Clock.schedule_once(lambda *_: self.sync_public_backend(), 0.45)
         return root
 
     def reload_content_data(self, refresh_widgets=False):
@@ -811,6 +908,146 @@ class FishingMVPApp(App):
             self.refresh_home_content()
             self.refresh_news_featured()
 
+    def sync_public_backend(self):
+        """Refresh public content without blocking the Kivy render thread."""
+
+        if not self.supabase.configured:
+            return
+        run_async(
+            self.public_backend_sync.fetch,
+            self.apply_public_backend_snapshot,
+            self.public_backend_sync_failed,
+            self.dispatch_ui,
+        )
+
+    def apply_public_backend_snapshot(self, snapshot):
+        global GALLERY_ITEMS, NEWS_ITEMS, HERO_SLIDES, LEADERBOARD_ENTRIES
+
+        remote_events = []
+        for row in snapshot.get("events") or []:
+            event_key = EVENT_KEY_BY_REMOTE_ID.get(str(row.get("id")))
+            if not event_key:
+                continue
+            previous = EVENTS.get(event_key, {})
+            starts_at = parse_timestamp(row.get("starts_at"))
+            ends_at = parse_timestamp(row.get("ends_at"))
+            total_spots = int(row.get("total_spots") or 82)
+            occupied = set(row.get("occupied_spots") or ())
+            try:
+                self.database.sync_remote_spots(event_key, occupied)
+            except sqlite3.DatabaseError:
+                pass
+            fish_kg = float(row.get("fish_kg") or 0)
+            event = {
+                "title": row.get("title") or previous.get("title", "Event Nila"),
+                "date": starts_at.strftime("%d-%m-%Y") if starts_at else previous.get("date", "-"),
+                "time": (
+                    f'{starts_at.strftime("%H.%M")} - {ends_at.strftime("%H.%M")} WIB'
+                    if starts_at and ends_at
+                    else previous.get("time", "-")
+                ),
+                "price": int(row.get("price") or 0),
+                "quota": total_spots,
+                "available": max(0, total_spots - len(occupied)),
+                "release": f"Pelepasan nila {fish_kg:g} kg",
+                "image": row.get("cached_image") or previous.get("image", "hero-nila.png"),
+                "is_active": True,
+                "remote_id": row.get("id"),
+            }
+            EVENTS[event_key] = event
+            self.all_events[event_key] = dict(event)
+            remote_events.append((event_key, event))
+
+        if remote_events:
+            HERO_SLIDES = tuple(
+                {
+                    "image": event["image"],
+                    "kicker": "EVENT TERBARU ADEM AYEM",
+                    "title": event["title"],
+                    "meta": f'{event["date"]} | {event["time"]} | {rupiah(event["price"])}',
+                    "event_id": event_key,
+                }
+                for event_key, event in remote_events
+            )
+
+        remote_gallery = [
+            (
+                row["cached_image"],
+                row.get("title") or "Momen Adem Ayem",
+                str(row.get("category") or "Momen").title(),
+            )
+            for row in (snapshot.get("gallery") or [])
+            if row.get("cached_image")
+        ]
+        if remote_gallery:
+            GALLERY_ITEMS = tuple(remote_gallery)
+
+        remote_news = []
+        for row in snapshot.get("news") or []:
+            if not row.get("cached_image"):
+                continue
+            published = parse_timestamp(row.get("published_at"))
+            body = row.get("body") or row.get("summary") or ""
+            remote_news.append(
+                {
+                    "id": row.get("id"),
+                    "category": str(row.get("category") or "Pengumuman").title(),
+                    "title": row.get("title") or "Kabar Adem Ayem",
+                    "summary": row.get("summary") or "",
+                    "date": published.strftime("%d-%m-%Y") if published else "Terbaru",
+                    "badge": "TERBARU",
+                    "image": row["cached_image"],
+                    "event_id": EVENT_KEY_BY_REMOTE_ID.get(str(row.get("event_id"))),
+                    "body": tuple(part for part in body.split("\n\n") if part),
+                    "facts": "INFORMASI RESMI",
+                    "is_active": True,
+                }
+            )
+        if remote_news:
+            NEWS_ITEMS = tuple(remote_news)
+
+        event_names = {
+            str(row.get("id")): row.get("title") or "Event Nila"
+            for row in snapshot.get("events") or []
+        }
+        remote_leaders = []
+        for row in snapshot.get("leaders") or []:
+            if not row.get("cached_image"):
+                continue
+            biggest = float(row.get("fish_weight_kg") or 0)
+            remote_leaders.append(
+                {
+                    "id": row.get("id"),
+                    "name": row.get("angler_name") or "Pemancing",
+                    "event": event_names.get(str(row.get("event_id")), "Event Nila"),
+                    "biggest": biggest,
+                    "total": float(row.get("total_weight_kg") or biggest),
+                    "count": int(row.get("fish_count") or 1),
+                    "spot": row.get("notes") or "Lapak -",
+                    "image": row["cached_image"],
+                    "periods": ("Hari Ini", "Per Event", "Bulanan"),
+                    "is_active": True,
+                }
+            )
+        if remote_leaders:
+            LEADERBOARD_ENTRIES = tuple(remote_leaders)
+
+        self.rebuild_event_cards()
+        self.filter_gallery("Semua")
+        self.filter_news("Semua")
+        self.filter_leaderboard("Per Event")
+        if HERO_SLIDES:
+            self.show_hero_slide(0)
+        self.refresh_home_content()
+        self.refresh_news_featured()
+        self.refresh_availability()
+
+    def public_backend_sync_failed(self, error):
+        # Local seed/cache stays visible. Only surface the issue when the user is
+        # already looking at the information page, avoiding noisy startup popups.
+        if getattr(self.manager, "current", None) == "info":
+            self.show_message("Sinkronisasi tertunda", str(error))
+
     def first_event_id(self):
         return next(iter(EVENTS), None)
 
@@ -820,7 +1057,7 @@ class FishingMVPApp(App):
     def build_navigation(self):
         nav = BoxLayout(
             size_hint_y=None,
-            height=dp(68),
+            height=dp(64),
             padding=(dp(7), dp(7)),
             spacing=dp(4),
         )
@@ -958,7 +1195,7 @@ class FishingMVPApp(App):
         content.add_widget(section_heading("Jadwal terdekat", "Amankan lapak sebelum penuh"))
         next_event = Card(
             size_hint_y=None,
-            height=dp(126),
+            height=dp(142),
             padding=dp(12),
             spacing=dp(11),
             background=COLORS["white"],
@@ -1092,7 +1329,7 @@ class FishingMVPApp(App):
             background_color=(0, 0, 0, 0),
             color=COLORS["forest"],
             bold=True,
-            font_size="11sp",
+            font_size=dp(10),
             font_name=FONT_DISPLAY,
             halign="center",
         )
@@ -1142,7 +1379,7 @@ class FishingMVPApp(App):
         filters = BoxLayout(size_hint_y=None, height=dp(38), spacing=dp(7))
         self.event_filter_buttons = {}
         for filter_name in ("Semua", "225 KG", "200 KG", "150 KG", "100 KG"):
-            chip = GhostButton(text=filter_name, height=dp(36), font_size="10sp")
+            chip = GhostButton(text=filter_name, height=dp(36), font_size=dp(10))
             chip.bind(on_release=lambda _button, name=filter_name: self.filter_events(name))
             self.event_filter_buttons[filter_name] = chip
             filters.add_widget(chip)
@@ -1622,7 +1859,7 @@ class FishingMVPApp(App):
         filters = BoxLayout(size_hint_y=None, height=dp(38), spacing=dp(5))
         self.gallery_filter_buttons = {}
         for category in ("Semua", "Event", "Tangkapan", "Momen", "Kolam"):
-            button = GhostButton(text=category, height=dp(36), font_size="8sp")
+            button = GhostButton(text=category, height=dp(36), font_size=dp(8))
             button.bind(on_release=lambda _button, value=category: self.filter_gallery(value))
             self.gallery_filter_buttons[category] = button
             filters.add_widget(button)
@@ -1651,7 +1888,7 @@ class FishingMVPApp(App):
             card.add_widget(Image(source=media_source(filename), fit_mode="cover"))
             card.add_widget(label(item_category.upper(), 18, 7, COLORS["terracotta"], True))
             card.add_widget(label(title, 34, 11, COLORS["forest"], True))
-            open_button = GhostButton(text="Lihat foto", height=dp(30), font_size="8sp")
+            open_button = GhostButton(text="Lihat foto", height=dp(30), font_size=dp(8))
             open_button.bind(on_release=lambda _button, image_name=filename, caption=title: self.show_photo(image_name, caption))
             card.add_widget(open_button)
             self.gallery_grid.add_widget(card)
@@ -1702,9 +1939,9 @@ class FishingMVPApp(App):
         choose = GhostButton(text="Pilih Foto dari Perangkat")
         choose.bind(on_release=lambda *_: self.choose_content_image("user_gallery"))
         content.add_widget(choose)
-        submit = PrimaryButton(text="Kirim untuk Ditinjau")
-        submit.bind(on_release=lambda *_: self.submit_user_gallery())
-        content.add_widget(submit)
+        self.user_gallery_submit_button = PrimaryButton(text="Kirim untuk Ditinjau")
+        self.user_gallery_submit_button.bind(on_release=lambda *_: self.submit_user_gallery())
+        content.add_widget(self.user_gallery_submit_button)
         content.add_widget(section_heading("Kiriman saya", "Pantau hasil pemeriksaan admin"))
         self.user_gallery_submission_list = BoxLayout(
             orientation="vertical", size_hint_y=None, spacing=dp(8)
@@ -1734,6 +1971,38 @@ class FishingMVPApp(App):
         if len(title) < 3 or not image_path:
             self.show_message("Kiriman belum lengkap", "Isi judul dan pilih foto terlebih dahulu.")
             return
+        if self.supabase.configured and self.current_user.get("remote_id"):
+            remote_id = self.current_user["remote_id"]
+            extension = os.path.splitext(image_path)[1].lower() or ".jpg"
+            object_path = f"{remote_id}/{uuid4().hex}{extension}"
+            category = self.user_gallery_category.text.lower()
+            self.user_gallery_submit_button.disabled = True
+            self.user_gallery_submit_button.text = "Mengunggah Foto..."
+
+            def upload_submission():
+                self.supabase.upload_file("gallery", object_path, image_path)
+                return self.supabase.insert(
+                    "gallery_items",
+                    {
+                        "user_id": remote_id,
+                        "title": title,
+                        "caption": "",
+                        "category": category,
+                        "image_path": object_path,
+                        "status": "pending",
+                    },
+                )
+
+            run_async(
+                upload_submission,
+                lambda _result: self._finish_gallery_submission(title, image_path),
+                self._gallery_submission_failed,
+                self.dispatch_ui,
+            )
+            return
+        self._finish_gallery_submission(title, image_path)
+
+    def _finish_gallery_submission(self, title, image_path):
         self.database.create_gallery_item(
             title,
             self.user_gallery_category.text,
@@ -1743,6 +2012,8 @@ class FishingMVPApp(App):
             submitted_by=self.current_user["full_name"],
             approved=False,
         )
+        self.user_gallery_submit_button.disabled = False
+        self.user_gallery_submit_button.text = "Kirim untuk Ditinjau"
         self.user_gallery_title.text = ""
         self.admin_user_gallery_image = None
         self.admin_user_gallery_image_label.text = "Belum ada foto dipilih"
@@ -1751,6 +2022,11 @@ class FishingMVPApp(App):
             "Foto berhasil dikirim",
             "Kiriman berstatus menunggu dan akan tampil setelah disetujui admin.",
         )
+
+    def _gallery_submission_failed(self, error):
+        self.user_gallery_submit_button.disabled = False
+        self.user_gallery_submit_button.text = "Kirim untuk Ditinjau"
+        self.show_message("Foto belum terkirim", str(error))
 
     def refresh_user_gallery_submissions(self):
         if not hasattr(self, "user_gallery_submission_list"):
@@ -1812,7 +2088,7 @@ class FishingMVPApp(App):
         periods = BoxLayout(size_hint_y=None, height=dp(40), spacing=dp(6))
         self.leaderboard_period_buttons = {}
         for period in ("Hari Ini", "Per Event", "Bulanan"):
-            button = GhostButton(text=period, height=dp(38), font_size="9sp")
+            button = GhostButton(text=period, height=dp(38), font_size=dp(9))
             button.bind(on_release=lambda _button, value=period: self.filter_leaderboard(value))
             self.leaderboard_period_buttons[period] = button
             periods.add_widget(button)
@@ -1899,7 +2175,7 @@ class FishingMVPApp(App):
         filters = BoxLayout(size_hint_y=None, height=dp(38), spacing=dp(5))
         self.news_filter_buttons = {}
         for category in ("Semua", "Event", "Kolam", "Aturan", "Pengumuman"):
-            button = GhostButton(text=category, height=dp(36), font_size="8sp")
+            button = GhostButton(text=category, height=dp(36), font_size=dp(8))
             button.bind(on_release=lambda _button, value=category: self.filter_news(value))
             self.news_filter_buttons[category] = button
             filters.add_widget(button)
@@ -1943,7 +2219,7 @@ class FishingMVPApp(App):
             copy.add_widget(label(f'{item["category"].upper()} | {item["date"]}', 20, 7, COLORS["terracotta"], True))
             copy.add_widget(label(item["title"], 42, 13, COLORS["forest"], True))
             copy.add_widget(label(item["summary"], 34, 8, COLORS["muted"]))
-            button = GhostButton(text="Baca kabar", height=dp(30), size_hint_x=0.58, font_size="8sp")
+            button = GhostButton(text="Baca kabar", height=dp(30), size_hint_x=0.58, font_size=dp(8))
             button.bind(on_release=lambda _button, article=item: self.open_news_detail(article))
             copy.add_widget(button)
             card.add_widget(copy)
@@ -2174,10 +2450,13 @@ class FishingMVPApp(App):
         )
         header.add_widget(self.auth_context_label)
         content.add_widget(header)
-        content.add_widget(section_heading("Selamat datang kembali", "Gunakan username dan password Anda"))
-        content.add_widget(label("Username", 24, 12, COLORS["ink"], True))
+        login_identity = "email" if self.supabase.configured else "username atau email"
+        content.add_widget(section_heading("Selamat datang kembali", f"Gunakan {login_identity} dan password Anda"))
+        content.add_widget(label("Email / Username", 24, 12, COLORS["ink"], True))
         self.login_username = StyledTextInput(
-            hint_text="contoh: budi_nila", multiline=False, input_type="text"
+            hint_text="nama@email.com" if self.supabase.configured else "contoh: budi_nila",
+            multiline=False,
+            input_type="mail" if self.supabase.configured else "text",
         )
         content.add_widget(self.login_username)
         content.add_widget(label("Password", 24, 12, COLORS["ink"], True))
@@ -2192,10 +2471,10 @@ class FishingMVPApp(App):
         self.login_username.bind(
             on_text_validate=lambda *_: setattr(self.login_password, "focus", True)
         )
-        login_button = PrimaryButton(text="Masuk & Lanjutkan")
-        login_button.bind(on_release=lambda *_: self.login_user())
+        self.login_button = PrimaryButton(text="Masuk & Lanjutkan")
+        self.login_button.bind(on_release=lambda *_: self.login_user())
         self.login_password.bind(on_text_validate=lambda *_: self.login_user())
-        content.add_widget(login_button)
+        content.add_widget(self.login_button)
         register_button = GhostButton(text="Belum punya akun? Buat Akun")
         register_button.bind(on_release=lambda *_: self.go("register"))
         content.add_widget(register_button)
@@ -2219,6 +2498,7 @@ class FishingMVPApp(App):
         content.add_widget(section_heading("Buat Akun Pemancing", "Satu akun untuk tiket dan riwayat Anda"))
         fields = (
             ("Nama lengkap", "register_full_name", "Contoh: Budi Santoso", False, None),
+            ("Email", "register_email", "nama@email.com", False, None),
             ("Username", "register_username", "Huruf, angka, atau garis bawah", False, None),
             ("Nomor WhatsApp", "register_phone", "08xxxxxxxxxx", False, "int"),
             ("Password", "register_password", "Minimal 8 karakter", True, None),
@@ -2263,12 +2543,12 @@ class FishingMVPApp(App):
         read_terms.bind(on_release=lambda *_: self.show_registration_terms())
         terms_row.add_widget(read_terms)
         content.add_widget(terms_row)
-        create_button = PrimaryButton(text="Buat Akun & Masuk")
-        create_button.bind(on_release=lambda *_: self.register_user())
+        self.register_button = PrimaryButton(text="Buat Akun & Masuk")
+        self.register_button.bind(on_release=lambda *_: self.register_user())
         self.register_password_confirm.bind(
             on_text_validate=lambda *_: self.register_user()
         )
-        content.add_widget(create_button)
+        content.add_widget(self.register_button)
         screen.add_widget(scroll)
         return screen
 
@@ -2281,6 +2561,26 @@ class FishingMVPApp(App):
     def login_user(self):
         username = self.login_username.text.strip()
         password = self.login_password.text
+        if self.supabase.configured:
+            if "@" not in username or not password:
+                self.show_message(
+                    "Login belum lengkap", "Masukkan email dan password akun online."
+                )
+                return
+            self.login_button.disabled = True
+            self.login_button.text = "Menghubungkan..."
+
+            def online_login():
+                payload = self.supabase.sign_in(username, password)
+                return payload, self.supabase.current_profile()
+
+            run_async(
+                online_login,
+                self._online_login_complete,
+                lambda error: self._online_auth_failed(error, "login"),
+                self.dispatch_ui,
+            )
+            return
         user = self.database.authenticate_user(username, password)
         if not user:
             self.login_password.text = ""
@@ -2293,12 +2593,16 @@ class FishingMVPApp(App):
 
     def register_user(self):
         full_name = self.register_full_name.text.strip()
+        email = self.register_email.text.strip().lower()
         username = self.register_username.text.strip().lower()
         phone = self.register_phone.text.strip()
         password = self.register_password.text
         confirmation = self.register_password_confirm.text
         if len(full_name) < 3:
             self.show_message("Nama belum valid", "Masukkan nama lengkap minimal 3 karakter.")
+            return
+        if "@" not in email or "." not in email.rsplit("@", 1)[-1]:
+            self.show_message("Email belum valid", "Masukkan alamat email aktif.")
             return
         if not self.valid_username(username):
             self.show_message("Username belum valid", "Gunakan 3-24 karakter berupa huruf, angka, atau garis bawah.")
@@ -2315,13 +2619,34 @@ class FishingMVPApp(App):
                 "Baca dan setujui Privasi & Ketentuan sebelum membuat akun.",
             )
             return
+        if self.supabase.configured:
+            self.register_button.disabled = True
+            self.register_button.text = "Membuat Akun..."
+
+            def online_register():
+                payload = self.supabase.sign_up(
+                    email, password, username, full_name, phone
+                )
+                profile = self.supabase.current_profile() if self.supabase.signed_in else None
+                return payload, profile
+
+            run_async(
+                online_register,
+                self._online_registration_complete,
+                lambda error: self._online_auth_failed(error, "register"),
+                self.dispatch_ui,
+            )
+            return
         try:
-            user = self.database.create_user(username, password, full_name, phone)
+            user = self.database.create_user(
+                username, password, full_name, phone, email=email
+            )
         except AccountExistsError as error:
             self.show_message("Tidak dapat membuat akun", str(error))
             return
         for field in (
             self.register_full_name,
+            self.register_email,
             self.register_username,
             self.register_phone,
             self.register_password,
@@ -2330,6 +2655,95 @@ class FishingMVPApp(App):
             field.text = ""
         self.register_terms_checkbox.active = False
         self.complete_login(user)
+
+    def dispatch_ui(self, callback):
+        Clock.schedule_once(lambda *_: callback(), 0)
+
+    def _set_auth_buttons_ready(self):
+        if hasattr(self, "login_button"):
+            self.login_button.disabled = False
+            self.login_button.text = "Masuk & Lanjutkan"
+        if hasattr(self, "register_button"):
+            self.register_button.disabled = False
+            self.register_button.text = "Buat Akun & Masuk"
+
+    def _online_auth_failed(self, error, source):
+        self._set_auth_buttons_ready()
+        if source == "login":
+            self.login_password.text = ""
+        message = str(error)
+        if isinstance(error, SupabaseError) and error.status_code in (400, 401):
+            message = (
+                "Email atau password tidak sesuai."
+                if source == "login"
+                else message
+            )
+        self.show_message(
+            "Login gagal" if source == "login" else "Akun belum dibuat",
+            message,
+        )
+
+    def _cache_online_profile(self, payload, profile):
+        remote_user = (payload or {}).get("user") or self.supabase.user or {}
+        remote_id = remote_user.get("id") or profile.get("id")
+        email = remote_user.get("email") or self.login_username.text.strip().lower()
+        if not remote_id or not email:
+            raise SupabaseError("Identitas akun online tidak lengkap.")
+        return self.database.upsert_remote_user(remote_id, email, profile)
+
+    def _online_login_complete(self, result):
+        self._set_auth_buttons_ready()
+        payload, profile = result
+        try:
+            user = self._cache_online_profile(payload, profile)
+        except (SupabaseError, sqlite3.DatabaseError) as error:
+            self._online_auth_failed(error, "login")
+            return
+        self.login_password.text = ""
+        self.complete_login(user)
+
+    def _online_registration_complete(self, result):
+        self._set_auth_buttons_ready()
+        payload, profile = result
+        if not self.supabase.signed_in or profile is None:
+            self.register_password.text = ""
+            self.register_password_confirm.text = ""
+            self.show_message(
+                "Periksa email Anda",
+                "Akun dibuat. Buka tautan konfirmasi dari Supabase, lalu masuk dari halaman login.",
+            )
+            self.go("auth")
+            return
+        try:
+            user = self._cache_online_profile(payload, profile)
+        except (SupabaseError, sqlite3.DatabaseError) as error:
+            self._online_auth_failed(error, "register")
+            return
+        for field in (
+            self.register_full_name,
+            self.register_email,
+            self.register_username,
+            self.register_phone,
+            self.register_password,
+            self.register_password_confirm,
+        ):
+            field.text = ""
+        self.register_terms_checkbox.active = False
+        self.complete_login(user)
+
+    def restore_online_session(self):
+        if not self.supabase.configured or not self.supabase.signed_in:
+            return
+
+        def restore():
+            return {"user": self.supabase.user}, self.supabase.current_profile()
+
+        run_async(
+            restore,
+            self._online_login_complete,
+            lambda _error: self.supabase._clear_session(),
+            self.dispatch_ui,
+        )
 
     @staticmethod
     def valid_username(username):
@@ -2353,6 +2767,8 @@ class FishingMVPApp(App):
             self.go("profile")
 
     def logout_user(self):
+        if self.supabase.configured and self.supabase.signed_in:
+            run_async(self.supabase.sign_out)
         self.current_user = None
         self.session_bookings = []
         self.current_ticket_booking = None
@@ -2423,7 +2839,7 @@ class FishingMVPApp(App):
         content.add_widget(stats)
 
         content.add_widget(section_heading("Tiket aktif", "Akses cepat untuk check-in event"))
-        ticket_card = Card(orientation="vertical", size_hint_y=None, height=dp(172), padding=dp(13), spacing=dp(4), background=COLORS["white"])
+        ticket_card = Card(orientation="vertical", size_hint_y=None, height=dp(194), padding=dp(13), spacing=dp(4), background=COLORS["white"])
         self.profile_ticket_status = label("BELUM ADA PEMESANAN", 20, 8, COLORS["terracotta"], True)
         self.profile_ticket_title = label("Pesan tiket event pertamamu", 34, 17, COLORS["forest"], True)
         self.profile_ticket_meta = label("Pilih event dan salah satu dari 82 lapak", 28, 10, COLORS["muted"])
@@ -2524,15 +2940,15 @@ class FishingMVPApp(App):
             )
             setattr(self, attribute, field)
             content.add_widget(field)
-        save_button = PrimaryButton(text="Simpan Perubahan Profil")
-        save_button.bind(on_release=lambda *_: self.save_profile())
-        content.add_widget(save_button)
+        self.profile_save_button = PrimaryButton(text="Simpan Perubahan Profil")
+        self.profile_save_button.bind(on_release=lambda *_: self.save_profile())
+        content.add_widget(self.profile_save_button)
         logout_button = GhostButton(text="Keluar dari Akun")
         logout_button.bind(on_release=lambda *_: self.logout_user())
         content.add_widget(logout_button)
         content.add_widget(
             label(
-                "Foto disalin ke penyimpanan aplikasi. Format yang didukung: PNG, JPG, dan JPEG hingga 5 MB.",
+                "Foto disalin ke penyimpanan aplikasi. Format yang didukung: PNG, JPG, dan WEBP hingga 5 MB.",
                 58,
                 10,
                 COLORS["muted"],
@@ -2569,9 +2985,37 @@ class FishingMVPApp(App):
         self.go("edit_profile")
 
     def choose_profile_photo(self):
+        if not self.current_user:
+            self.go("auth")
+            return
+        destination_directory = os.path.join(self.user_data_dir, "avatars")
+        prefix = f"user-{self.current_user['id']}"
+
+        def photo_ready(destination):
+            self.pending_avatar_path = destination
+            self.remove_avatar_button.disabled = False
+            self.remove_avatar_button.opacity = 1
+            self.avatar_change_status.text = "Foto baru siap disimpan."
+            self.render_avatar(
+                self.edit_avatar_preview,
+                destination,
+                self.edit_full_name.text or self.current_user["full_name"],
+                96,
+            )
+
+        if kivy_platform == "android":
+            self.android_image_picker.pick(
+                destination_directory,
+                prefix,
+                5 * 1024 * 1024,
+                photo_ready,
+                lambda message: self.show_message("Foto tidak dapat digunakan", message),
+            )
+            return
+
         chooser = FileChooserListView(
             path=os.path.expanduser("~"),
-            filters=["*.png", "*.jpg", "*.jpeg", "*.PNG", "*.JPG", "*.JPEG"],
+            filters=["*.png", "*.jpg", "*.jpeg", "*.webp", "*.PNG", "*.JPG", "*.JPEG", "*.WEBP"],
             multiselect=False,
         )
         layout = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(8))
@@ -2593,37 +3037,17 @@ class FishingMVPApp(App):
             if not chooser.selection:
                 return
             source = chooser.selection[0]
-            if not os.path.isfile(source) or os.path.getsize(source) > 5 * 1024 * 1024:
-                popup.dismiss()
-                self.show_message(
-                    "Foto tidak dapat digunakan",
-                    "Pilih file PNG/JPG berukuran maksimal 5 MB.",
-                )
-                return
-            extension = os.path.splitext(source)[1].lower()
-            avatar_directory = os.path.join(self.user_data_dir, "avatars")
-            os.makedirs(avatar_directory, exist_ok=True)
-            destination = os.path.join(
-                avatar_directory, f"user-{self.current_user['id']}-{uuid4().hex}{extension}"
-            )
             try:
-                shutil.copy2(source, destination)
-            except OSError:
+                destination = copy_local_image(
+                    source, destination_directory, prefix, 5 * 1024 * 1024
+                )
+            except (OSError, ImageSelectionError) as exc:
                 popup.dismiss()
                 self.show_message(
-                    "Foto gagal disalin", "Periksa izin dan ruang penyimpanan perangkat."
+                    "Foto tidak dapat digunakan", str(exc)
                 )
                 return
-            self.pending_avatar_path = destination
-            self.remove_avatar_button.disabled = False
-            self.remove_avatar_button.opacity = 1
-            self.avatar_change_status.text = "Foto baru siap disimpan."
-            self.render_avatar(
-                self.edit_avatar_preview,
-                destination,
-                self.edit_full_name.text or self.current_user["full_name"],
-                96,
-            )
+            photo_ready(destination)
             popup.dismiss()
 
         select_button.bind(on_release=select)
@@ -2657,6 +3081,42 @@ class FishingMVPApp(App):
                 "Periksa nama, username 3-24 karakter, dan nomor WhatsApp.",
             )
             return
+        if self.supabase.configured and self.current_user.get("remote_id"):
+            remote_id = self.current_user["remote_id"]
+            avatar_changed = self.pending_avatar_path != self.original_avatar_path
+            self.profile_save_button.disabled = True
+            self.profile_save_button.text = "Menyinkronkan..."
+
+            def update_online_profile():
+                values = {
+                    "username": username,
+                    "full_name": full_name,
+                    "phone": phone,
+                }
+                if avatar_changed:
+                    if self.pending_avatar_path:
+                        extension = os.path.splitext(self.pending_avatar_path)[1].lower() or ".jpg"
+                        object_path = f"{remote_id}/{uuid4().hex}{extension}"
+                        self.supabase.upload_file(
+                            "avatars", object_path, self.pending_avatar_path
+                        )
+                        values["avatar_path"] = object_path
+                    else:
+                        values["avatar_path"] = None
+                return self.supabase.update(
+                    "profiles", values, {"id": f"eq.{remote_id}"}
+                )
+
+            run_async(
+                update_online_profile,
+                lambda _result: self._finish_profile_save(username, full_name, phone),
+                self._profile_save_failed,
+                self.dispatch_ui,
+            )
+            return
+        self._finish_profile_save(username, full_name, phone)
+
+    def _finish_profile_save(self, username, full_name, phone):
         try:
             self.current_user = self.database.update_user(
                 self.current_user["id"],
@@ -2666,14 +3126,24 @@ class FishingMVPApp(App):
                 self.pending_avatar_path,
             )
         except AccountExistsError as error:
+            self.profile_save_button.disabled = False
+            self.profile_save_button.text = "Simpan Perubahan Profil"
             self.show_message("Username tidak tersedia", str(error))
             return
+        self.profile_save_button.disabled = False
+        self.profile_save_button.text = "Simpan Perubahan Profil"
+        self.original_avatar_path = self.pending_avatar_path
         self.refresh_profile()
         self.go("profile")
         self.show_message(
             "Profil diperbarui",
             "Data akun dan foto profil berhasil disimpan.",
         )
+
+    def _profile_save_failed(self, error):
+        self.profile_save_button.disabled = False
+        self.profile_save_button.text = "Simpan Perubahan Profil"
+        self.show_message("Profil belum tersimpan", str(error))
 
     def render_avatar(self, container, avatar_path, full_name, size=82):
         container.clear_widgets()
@@ -2924,6 +3394,7 @@ class FishingMVPApp(App):
             ("Kelola Galeri", "Unggah foto baru langsung dari perangkat", lambda: self.open_admin_gallery()),
             ("Kelola Peringkat", "Tambah dan edit hasil tangkapan terverifikasi", lambda: self.open_admin_leaderboard()),
             ("Kelola Berita", "Terbitkan pengumuman dan kabar kolam", lambda: self.open_admin_news()),
+            ("Ganti PIN Admin", "Perbarui PIN pengelola yang tersimpan di perangkat", lambda: self.change_admin_pin()),
             ("Kunci Admin", "Akhiri sesi pengelola pada perangkat ini", lambda: self.lock_admin()),
         ):
             card = Card(size_hint_y=None, height=dp(82), padding=dp(11), spacing=dp(8))
@@ -3489,9 +3960,29 @@ class FishingMVPApp(App):
         self.refresh_admin_news()
 
     def choose_content_image(self, content_type):
+        destination_directory = os.path.join(
+            self.user_data_dir, "content", content_type
+        )
+
+        def image_ready(destination):
+            setattr(self, f"admin_{content_type}_image", destination)
+            getattr(self, f"admin_{content_type}_image_label").text = image_display_name(
+                destination
+            )
+
+        if kivy_platform == "android":
+            self.android_image_picker.pick(
+                destination_directory,
+                content_type,
+                5 * 1024 * 1024,
+                image_ready,
+                lambda message: self.show_message("Foto tidak dapat digunakan", message),
+            )
+            return
+
         chooser = FileChooserListView(
             path=os.path.expanduser("~"),
-            filters=["*.png", "*.jpg", "*.jpeg", "*.PNG", "*.JPG", "*.JPEG"],
+            filters=["*.png", "*.jpg", "*.jpeg", "*.webp", "*.PNG", "*.JPG", "*.JPEG", "*.WEBP"],
             multiselect=False,
         )
         layout = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(8))
@@ -3509,22 +4000,15 @@ class FishingMVPApp(App):
             if not chooser.selection:
                 return
             source = chooser.selection[0]
-            if not os.path.isfile(source) or os.path.getsize(source) > 10 * 1024 * 1024:
-                popup.dismiss()
-                self.show_message("Foto tidak dapat digunakan", "Pilih PNG/JPG berukuran maksimal 10 MB.")
-                return
-            extension = os.path.splitext(source)[1].lower()
-            directory = os.path.join(self.user_data_dir, "content", content_type)
-            os.makedirs(directory, exist_ok=True)
-            destination = os.path.join(directory, f"{content_type}-{uuid4().hex}{extension}")
             try:
-                shutil.copy2(source, destination)
-            except OSError:
+                destination = copy_local_image(
+                    source, destination_directory, content_type, 5 * 1024 * 1024
+                )
+            except (OSError, ImageSelectionError) as exc:
                 popup.dismiss()
-                self.show_message("Foto gagal disalin", "Periksa izin dan ruang penyimpanan perangkat.")
+                self.show_message("Foto tidak dapat digunakan", str(exc))
                 return
-            setattr(self, f"admin_{content_type}_image", destination)
-            getattr(self, f"admin_{content_type}_image_label").text = os.path.basename(destination)
+            image_ready(destination)
             popup.dismiss()
 
         select.bind(on_release=use_image)
@@ -3803,13 +4287,99 @@ class FishingMVPApp(App):
         if self.admin_authenticated:
             self.go("admin")
             return
-        configured_pin = os.environ.get("ADEM_AYEM_ADMIN_PIN", "").strip()
-        if len(configured_pin) < 6:
-            self.show_message(
-                "Admin belum dikonfigurasi",
-                "Atur environment ADEM_AYEM_ADMIN_PIN minimal 6 digit sebelum menjalankan aplikasi admin.",
-            )
+
+        # Migrate the previous desktop-only environment configuration once.
+        # Android builds normally have no such variable and use first-run setup.
+        if not self.database.admin_pin_is_configured():
+            legacy_pin = os.environ.get("ADEM_AYEM_ADMIN_PIN", "").strip()
+            if len(legacy_pin) >= 6 and legacy_pin.isdigit():
+                self.database.set_admin_pin(legacy_pin, actor="environment_migration")
+
+        if not self.database.admin_pin_is_configured():
+            self.open_admin_pin_setup()
             return
+        self.open_admin_pin_login()
+
+    def open_admin_pin_setup(self):
+        content = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(9))
+        content.add_widget(
+            label(
+                "Buat PIN pengelola pertama untuk perangkat ini. PIN disimpan sebagai hash di penyimpanan privat aplikasi.",
+                72,
+                10,
+                COLORS["muted"],
+                False,
+                "center",
+            )
+        )
+        pin_input = StyledTextInput(
+            hint_text="PIN baru, minimal 6 angka",
+            multiline=False,
+            password=True,
+            input_filter="int",
+            input_type="number",
+        )
+        confirm_input = StyledTextInput(
+            hint_text="Ulangi PIN baru",
+            multiline=False,
+            password=True,
+            input_filter="int",
+            input_type="number",
+        )
+        status = label("", 30, 9, COLORS["terracotta"], True, "center")
+        content.add_widget(pin_input)
+        content.add_widget(confirm_input)
+        content.add_widget(status)
+        actions = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
+        close_button = GhostButton(text="Batal", height=dp(42))
+        save_button = PrimaryButton(text="Buat PIN Admin", height=dp(42))
+        actions.add_widget(close_button)
+        actions.add_widget(save_button)
+        content.add_widget(actions)
+        popup = Popup(
+            title="Konfigurasi Admin Pertama",
+            content=content,
+            size_hint=(0.9, None),
+            height=dp(385),
+        )
+        close_button.bind(on_release=popup.dismiss)
+
+        def save_pin(*_args):
+            pin = pin_input.text.strip()
+            confirmation = confirm_input.text.strip()
+            if len(pin) < 6 or not pin.isdigit():
+                status.text = "Gunakan minimal 6 angka."
+                pin_input.focus = True
+                return
+            if pin != confirmation:
+                status.text = "Konfirmasi PIN tidak sama."
+                confirm_input.text = ""
+                confirm_input.focus = True
+                return
+            try:
+                self.database.set_admin_pin(pin, actor="admin_setup")
+            except (ValueError, sqlite3.DatabaseError):
+                status.text = "PIN belum dapat disimpan. Coba kembali."
+                return
+            pin_input.text = ""
+            confirm_input.text = ""
+            self.admin_authenticated = True
+            popup.dismiss()
+            self.go("admin")
+            self.show_message(
+                "PIN Admin aktif",
+                "Simpan PIN dengan aman. PIN dapat diganti dari Dashboard Admin.",
+            )
+
+        save_button.bind(on_release=save_pin)
+        pin_input.bind(
+            on_text_validate=lambda *_: setattr(confirm_input, "focus", True)
+        )
+        confirm_input.bind(on_text_validate=save_pin)
+        popup.open()
+        Clock.schedule_once(lambda *_: setattr(pin_input, "focus", True), 0.1)
+
+    def open_admin_pin_login(self):
 
         content = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(10))
         content.add_widget(
@@ -3845,7 +4415,7 @@ class FishingMVPApp(App):
         close_button.bind(on_release=popup.dismiss)
 
         def login(*_args):
-            if not hmac.compare_digest(pin_input.text, configured_pin):
+            if not self.database.verify_admin_pin(pin_input.text):
                 pin_input.text = ""
                 pin_input.hint_text = "PIN salah, coba kembali"
                 pin_input.focus = True
@@ -3858,6 +4428,98 @@ class FishingMVPApp(App):
         pin_input.bind(on_text_validate=login)
         popup.open()
         Clock.schedule_once(lambda *_: setattr(pin_input, "focus", True), 0.1)
+
+    def change_admin_pin(self):
+        if not self.admin_authenticated:
+            self.request_admin_access()
+            return
+
+        content = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(8))
+        content.add_widget(
+            label(
+                "Masukkan PIN saat ini, kemudian buat PIN baru minimal 6 angka.",
+                54,
+                10,
+                COLORS["muted"],
+                False,
+                "center",
+            )
+        )
+        current_pin = StyledTextInput(
+            hint_text="PIN saat ini",
+            multiline=False,
+            password=True,
+            input_filter="int",
+            input_type="number",
+        )
+        new_pin = StyledTextInput(
+            hint_text="PIN baru, minimal 6 angka",
+            multiline=False,
+            password=True,
+            input_filter="int",
+            input_type="number",
+        )
+        confirmation = StyledTextInput(
+            hint_text="Ulangi PIN baru",
+            multiline=False,
+            password=True,
+            input_filter="int",
+            input_type="number",
+        )
+        status = label("", 28, 9, COLORS["terracotta"], True, "center")
+        content.add_widget(current_pin)
+        content.add_widget(new_pin)
+        content.add_widget(confirmation)
+        content.add_widget(status)
+        actions = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
+        close_button = GhostButton(text="Batal", height=dp(42))
+        save_button = PrimaryButton(text="Simpan PIN Baru", height=dp(42))
+        actions.add_widget(close_button)
+        actions.add_widget(save_button)
+        content.add_widget(actions)
+        popup = Popup(
+            title="Ganti PIN Admin",
+            content=content,
+            size_hint=(0.9, None),
+            height=dp(445),
+        )
+        close_button.bind(on_release=popup.dismiss)
+
+        def save_pin(*_args):
+            if not self.database.verify_admin_pin(current_pin.text):
+                status.text = "PIN saat ini salah."
+                current_pin.text = ""
+                current_pin.focus = True
+                return
+            candidate = new_pin.text.strip()
+            if len(candidate) < 6 or not candidate.isdigit():
+                status.text = "PIN baru harus minimal 6 angka."
+                new_pin.focus = True
+                return
+            if candidate != confirmation.text.strip():
+                status.text = "Konfirmasi PIN baru tidak sama."
+                confirmation.text = ""
+                confirmation.focus = True
+                return
+            try:
+                self.database.set_admin_pin(candidate, actor="admin_pin_change")
+            except (ValueError, sqlite3.DatabaseError):
+                status.text = "PIN baru belum dapat disimpan."
+                return
+            current_pin.text = ""
+            new_pin.text = ""
+            confirmation.text = ""
+            popup.dismiss()
+            self.show_message("PIN diperbarui", "PIN Admin baru sudah aktif.")
+
+        save_button.bind(on_release=save_pin)
+        current_pin.bind(on_text_validate=lambda *_: setattr(new_pin, "focus", True))
+        new_pin.bind(
+            on_text_validate=lambda *_: setattr(confirmation, "focus", True)
+        )
+        confirmation.bind(on_text_validate=save_pin)
+        popup.open()
+        Clock.schedule_once(lambda *_: setattr(current_pin, "focus", True), 0.1)
 
     def build_info(self):
         screen = Screen(name="info")
@@ -3888,6 +4550,24 @@ class FishingMVPApp(App):
             fact.add_widget(label(caption, 26, 9, COLORS["muted"], False, "center"))
             overview.add_widget(fact)
         content.add_widget(overview)
+
+        backend_title = (
+            "Database online siap"
+            if self.supabase.configured
+            else "Mode lokal sementara"
+        )
+        backend_copy = (
+            "Supabase Kivy terpisah sudah dikonfigurasi. Akun, unggahan, dan booking dapat disinkronkan lintas perangkat."
+            if self.supabase.configured
+            else "Aplikasi tetap berfungsi dari SQLite perangkat. Tambahkan backend_config.json untuk mengaktifkan sinkronisasi Supabase."
+        )
+        self.backend_status_label = self.info_card(
+            backend_title,
+            backend_copy,
+            145,
+            COLORS["mint"] if self.supabase.configured else COLORS["sky"],
+        )
+        content.add_widget(self.backend_status_label)
 
         content.add_widget(self.info_card("Kolam khusus ikan nila", "Seluruh kolam, event, pelepasan ikan, dan hasil tangkapan di aplikasi ini khusus ikan nila.", 125))
         content.add_widget(self.info_card("Rekomendasi hari ini", "Nila sedang aktif. Gunakan lumut, cacing, jagung, singkong, kroto, atau racikan bahan pangan alami.", 135, COLORS["mint"]))
@@ -3962,7 +4642,7 @@ class FishingMVPApp(App):
         content.add_widget(
             self.info_card(
                 "Penyimpanan & akses",
-                "Pada versi Kivy ini data tersimpan di perangkat pemancingan. Data hanya digunakan untuk operasional Pemancingan Adem Ayem Dlopo dan tidak dijual kepada pihak lain.",
+                "Data dasar disimpan aman di perangkat. Saat backend Kivy diaktifkan, akun, tiket, dan foto disinkronkan ke proyek Supabase khusus Kivy agar dapat digunakan lintas perangkat. Data tidak dijual kepada pihak lain.",
                 175,
             )
         )
@@ -4065,20 +4745,9 @@ class FishingMVPApp(App):
         event = EVENTS[event_id]
         self.current_event_id = event_id
         self.selected_spot = None
-        self.occupied_spots = self.database.occupied_spots(event_id)
-        remaining_spots = self.remaining_spots(event_id)
-        if remaining_spots <= 0:
-            self.show_message(
-                "Lapak penuh",
-                "Seluruh 82 lapak pada event ini sudah terisi. Silakan pilih event lain.",
-            )
-            return
         self.spot_event_title.text = event["title"]
-        self.spot_event_meta.text = f'{event["date"]} | {rupiah(event["price"])} | {remaining_spots}/82 tersedia'
         self.selected_spot_label.text = "Belum memilih lapak"
         self.spot_price_label.text = rupiah(event["price"])
-        for number, button in self.spot_buttons.items():
-            button.set_status("occupied" if number in self.occupied_spots else "available")
         self.booking_image.source = media_source(event["image"])
         self.booking_title.text = event["title"]
         self.booking_schedule.text = f'{event["date"]}\n{event["time"]}'
@@ -4087,7 +4756,68 @@ class FishingMVPApp(App):
         self.customer_name.text = self.current_user["full_name"]
         self.customer_phone.text = self.current_user["phone"]
         self.customer_notes.text = ""
+
+        if self.supabase.configured and self.current_user.get("remote_id"):
+            self.occupied_spots = set(range(1, 83))
+            self.spot_event_meta.text = "Memuat ketersediaan lapak online..."
+            for button in self.spot_buttons.values():
+                button.disabled = True
+                button.set_status("occupied")
+            self.go("booking")
+            remote_event_id = SUPABASE_EVENT_IDS[event_id]
+            run_async(
+                lambda: self.supabase.occupied_spots(remote_event_id),
+                lambda occupied: self._apply_online_spots(event_id, occupied),
+                lambda error: self._online_spots_failed(error),
+                self.dispatch_ui,
+            )
+            return
+
+        self.occupied_spots = self.database.occupied_spots(event_id)
+        remaining_spots = self.remaining_spots(event_id)
+        if remaining_spots <= 0:
+            self.show_message(
+                "Lapak penuh",
+                "Seluruh 82 lapak pada event ini sudah terisi. Silakan pilih event lain.",
+            )
+            return
+        self.spot_event_meta.text = f'{event["date"]} | {rupiah(event["price"])} | {remaining_spots}/82 tersedia'
+        for number, button in self.spot_buttons.items():
+            button.disabled = False
+            button.set_status("occupied" if number in self.occupied_spots else "available")
         self.go("booking")
+
+    def _apply_online_spots(self, event_id, occupied_spots):
+        if self.current_event_id != event_id:
+            return
+        try:
+            self.database.sync_remote_spots(event_id, occupied_spots)
+        except sqlite3.DatabaseError:
+            pass
+        self.occupied_spots = set(occupied_spots)
+        remaining_spots = 82 - len(self.occupied_spots)
+        event = EVENTS[event_id]
+        self.spot_event_meta.text = (
+            f'{event["date"]} | {rupiah(event["price"])} | {remaining_spots}/82 tersedia'
+        )
+        for number, button in self.spot_buttons.items():
+            button.disabled = number in self.occupied_spots
+            button.set_status(
+                "occupied" if number in self.occupied_spots else "available"
+            )
+        if remaining_spots <= 0:
+            self.show_message(
+                "Lapak penuh", "Seluruh lapak event ini sudah dipesan."
+            )
+
+    def _online_spots_failed(self, error):
+        self.spot_event_meta.text = "Ketersediaan online gagal dimuat"
+        for button in self.spot_buttons.values():
+            button.disabled = True
+        self.show_message(
+            "Lapak belum dapat dimuat",
+            f"{error}\n\nKoneksi online diperlukan agar nomor lapak tidak dipesan dua orang.",
+        )
 
     def select_spot(self, spot_number):
         if spot_number in self.occupied_spots:
@@ -4246,9 +4976,64 @@ class FishingMVPApp(App):
         }
         self.pay_button.disabled = True
         self.pay_button.text = "Menyimpan Pesanan..."
+        if self.supabase.configured and self.current_user.get("remote_id"):
+            remote_event_id = SUPABASE_EVENT_IDS[self.current_event_id]
+            run_async(
+                lambda: self.supabase.reserve_ticket(
+                    remote_event_id,
+                    self.selected_spot,
+                    name,
+                    phone,
+                    self.customer_notes.text.strip(),
+                ),
+                lambda remote: self._online_booking_reserved(booking, remote),
+                self._online_booking_failed,
+                self.dispatch_ui,
+            )
+            return
+        self._store_booking_locally(booking)
+
+    def _online_booking_reserved(self, booking, remote_booking):
+        if not isinstance(remote_booking, dict):
+            self._online_booking_failed(
+                SupabaseError("Backend tidak mengembalikan data tiket.")
+            )
+            return
+        booking["remote_id"] = remote_booking.get("booking_id")
+        booking["booking_code"] = remote_booking.get("booking_code") or booking["booking_code"]
+        booking["total_amount"] = int(remote_booking.get("amount") or booking["total_amount"])
+        booking["payment_status"] = "pending"
+        booking["payment_reference"] = None
+        self._store_booking_locally(booking)
+
+    def _online_booking_failed(self, error):
+        self.pay_button.disabled = False
+        self.pay_button.text = "Konfirmasi & Buat Tiket"
+        message = str(error)
+        if "SPOT_ALREADY_BOOKED" in message or "unique" in message.lower():
+            self.show_message(
+                "Lapak sudah terisi",
+                "Lapak ini baru saja dipesan. Daftar lapak akan dimuat ulang.",
+            )
+            self.start_booking(self.current_event_id)
+            return
+        self.show_message("Pesanan online gagal", message)
+
+    def _store_booking_locally(self, booking):
         try:
             self.database.create_booking(booking)
         except BookingConflictError:
+            if booking.get("remote_id"):
+                self.render_ticket(booking)
+                self.customer_name.text = ""
+                self.customer_phone.text = ""
+                self.customer_notes.text = ""
+                self.go("ticket")
+                self.show_message(
+                    "Tiket tersimpan online",
+                    "Tiket berhasil dibuat di server, tetapi riwayat lokal belum dapat diperbarui.",
+                )
+                return
             self.occupied_spots = self.database.occupied_spots(self.current_event_id)
             for number, button in self.spot_buttons.items():
                 button.set_status(

@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 
 
 def check_local_release():
@@ -13,6 +13,9 @@ def check_local_release():
     required_files = (
         PROJECT_DIR / "app.py",
         PROJECT_DIR / "database.py",
+        PROJECT_DIR / "media_picker.py",
+        PROJECT_DIR / "supabase_client.py",
+        PROJECT_DIR / "backend_sync.py",
         PROJECT_DIR / "mvp.db",
         PROJECT_DIR / "assets" / "generated" / "brand-adem-ayem-icon.png",
         PROJECT_DIR / "buildozer.spec",
@@ -43,19 +46,27 @@ def check_local_release():
     ):
         failures.append("Versi buildozer tidak sama dengan versi aplikasi.")
 
-    admin_pin = os.environ.get("ADEM_AYEM_ADMIN_PIN", "").strip()
-    if admin_pin and len(admin_pin) < 6:
-        failures.append("ADEM_AYEM_ADMIN_PIN harus minimal 6 karakter.")
     return failures
 
 
 def missing_public_services():
-    requirements = {
-        "ADEM_AYEM_API_URL": "backend HTTPS pusat",
+    missing = []
+    backend_config = PROJECT_DIR / "backend_config.json"
+    if not (
+        backend_config.exists()
+        or (
+            os.environ.get("ADEM_AYEM_SUPABASE_URL")
+            and os.environ.get("ADEM_AYEM_SUPABASE_PUBLISHABLE_KEY")
+        )
+    ):
+        missing.append("proyek dan Publishable key Supabase khusus Kivy")
+    for key, description in {
         "ADEM_AYEM_PAYMENT_PROVIDER": "payment gateway resmi",
         "ADEM_AYEM_PRIVACY_URL": "URL kebijakan privasi publik",
-    }
-    return [description for key, description in requirements.items() if not os.environ.get(key)]
+    }.items():
+        if not os.environ.get(key):
+            missing.append(description)
+    return missing
 
 
 def main():

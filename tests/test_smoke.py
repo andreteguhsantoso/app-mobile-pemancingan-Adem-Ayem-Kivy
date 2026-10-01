@@ -31,6 +31,15 @@ def run_smoke_test():
     assert module.DB_PATH.endswith("mvp.db")
     assert application.operational_status["venue_status"] == "Buka"
     assert application.database_health["healthy"] is True
+    assert application.database.admin_pin_is_configured() is False
+    application.database.set_admin_pin("123456", actor="smoke_test")
+    assert application.database.admin_pin_is_configured() is True
+    assert application.database.verify_admin_pin("123456") is True
+    assert application.database.verify_admin_pin("654321") is False
+    assert application.database.get_setting("admin_pin_hash") != "123456"
+    application.database.set_admin_pin("654321", actor="smoke_test_change")
+    assert application.database.verify_admin_pin("123456") is False
+    assert application.database.verify_admin_pin("654321") is True
     assert application.manager.has_screen("admin_events")
     assert application.manager.has_screen("admin_gallery")
     assert application.manager.has_screen("admin_news")

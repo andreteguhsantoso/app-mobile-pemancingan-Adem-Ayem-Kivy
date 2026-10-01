@@ -71,12 +71,7 @@ Virtual environment Python 3.13 dan Kivy sudah tersedia di proyek ini.
 .\.venv\Scripts\python.exe app.py
 ```
 
-Untuk mengaktifkan akses admin pada sesi PowerShell:
-
-```powershell
-$env:ADEM_AYEM_ADMIN_PIN="pin-minimal-6-digit"
-.\.venv\Scripts\python.exe app.py
-```
+Saat menu Admin dibuka pertama kali, aplikasi meminta pembuatan PIN minimal 6 angka. PIN disimpan sebagai hash PBKDF2 dengan salt acak di database privat perangkat, bukan sebagai teks asli atau source code.
 
 Untuk memasang ulang dependensi:
 
@@ -88,8 +83,8 @@ Database otomatis dibuat atau dimigrasikan pada `mvp.db`. Data lama dipertahanka
 
 ## Mengelola Konten dari Aplikasi
 
-1. Jalankan aplikasi dengan `ADEM_AYEM_ADMIN_PIN` seperti contoh di atas.
-2. Buka `Akun > Panduan & Lokasi > Admin`, lalu masukkan PIN pengelola.
+1. Buka `Akun > Panduan & Lokasi > Admin`.
+2. Pada penggunaan pertama, buat dan konfirmasi PIN pengelola minimal 6 angka. Setelah itu, masukkan PIN tersebut untuk membuka Dashboard Admin.
 3. Pilih `Kelola Event & Jadwal`, `Kelola Galeri`, `Kelola Peringkat`, atau `Kelola Berita`.
 4. Isi formulir, pilih foto PNG/JPG dari perangkat, lalu tekan tombol simpan atau terbitkan.
 5. Konten langsung tampil pada Agenda, Galeri, Berita, dan carousel Beranda.
@@ -142,9 +137,9 @@ Kolom `password_hash` dan `password_salt` sengaja tidak ditampilkan. Password ti
 
 ## Status Pengembangan
 
-Versi 1.2.0 siap sebagai beta publik lokal/satu perangkat dengan pembayaran di lokasi. Payment gateway, QR yang dapat dipindai, cuaca langsung, notifikasi, dan sinkronisasi backend tetap diperlukan sebelum distribusi multi-perangkat.
+Versi 1.3.0 menambahkan pemilih galeri Android berbasis Storage Access Framework, fondasi Supabase terpisah, Auth online, unggah avatar/galeri, sinkronisasi konten publik, dan reservasi lapak atomik. Tanpa `backend_config.json`, aplikasi tetap berjalan sebagai beta lokal. Payment gateway resmi, URL kebijakan privasi publik, dan proyek Supabase Kivy yang sudah dipasang migrasi tetap diperlukan sebelum distribusi Play Store multi-perangkat.
 
-Status kesiapan produksi dan blocker peluncuran publik dijelaskan pada [`LAUNCH_READINESS.md`](LAUNCH_READINESS.md). Versi SQLite saat ini cocok untuk satu perangkat operasional; peluncuran multi-pengguna membutuhkan backend pusat agar ketersediaan lapak sinkron di semua perangkat.
+Status kesiapan produksi dan blocker peluncuran publik dijelaskan pada [`LAUNCH_READINESS.md`](LAUNCH_READINESS.md). SQLite tetap dipakai sebagai cache/cadangan perangkat; Supabase menjadi sumber kebenaran untuk akun dan ketersediaan lapak setelah konfigurasi backend dipasang.
 
 ## Referensi Wireframe
 

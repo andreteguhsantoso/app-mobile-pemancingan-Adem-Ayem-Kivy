@@ -24,6 +24,8 @@ class PasswordError(Exception):
 
 
 class BookingDatabase:
+    ADMIN_PIN_ITERATIONS = 260_000
+
     def __init__(self, path):
         self.path = path
 
@@ -53,6 +55,8 @@ class BookingDatabase:
                 CREATE TABLE IF NOT EXISTS users (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    email TEXT UNIQUE COLLATE NOCASE,
+                    remote_id TEXT UNIQUE,
                     full_name TEXT NOT NULL,
                     phone TEXT NOT NULL,
                     password_hash TEXT NOT NULL,
@@ -198,6 +202,7 @@ class BookingDatabase:
             )
             self._migrate_booking_columns(connection)
             self._migrate_gallery_columns(connection)
+            self._migrate_user_columns(connection)
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_bookings_user
@@ -299,6 +304,26 @@ class BookingDatabase:
             connection.commit()
 
     @staticmethod
+    def _migrate_user_columns(connection):
+        columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(users)")
+        }
+        for name, definition in {
+            "email": "TEXT",
+            "remote_id": "TEXT",
+        }.items():
+            if name not in columns:
+                connection.execute(
+                    f"ALTER TABLE users ADD COLUMN {name} {definition}"
+                )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email COLLATE NOCASE)"
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_remote_id ON users(remote_id)"
+        )
+
+    @staticmethod
     def _migrate_booking_columns(connection):
         columns = {
             row["name"] for row in connection.execute("PRAGMA table_info(bookings)")
@@ -309,6 +334,7 @@ class BookingDatabase:
             "payment_reference": "TEXT",
             "updated_at": "TEXT",
             "user_id": "INTEGER",
+            "remote_id": "TEXT",
         }
         for name, definition in additions.items():
             if name not in columns:
@@ -318,6 +344,64 @@ class BookingDatabase:
         connection.execute(
             "UPDATE bookings SET updated_at = created_at WHERE updated_at IS NULL"
         )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_bookings_remote_id ON bookings(remote_id)"
+        )
+
+    def sync_remote_spots(self, event_id, occupied_spots):
+        """Apply server-authoritative availability without deleting local history."""
+
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        occupied_spots = {int(number) for number in occupied_spots}
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE event_spots
+                SET status = 'available', source = 'online', booking_id = NULL,
+                    updated_at = ?
+                WHERE event_id = ? AND source != 'booking'
+                """,
+                (timestamp, event_id),
+            )
+            for spot_number in occupied_spots:
+                connection.execute(
+                    """
+                    UPDATE event_spots
+                    SET status = 'occupied', source = 'online', updated_at = ?
+                    WHERE event_id = ? AND spot_number = ?
+                    """,
+                    (timestamp, event_id, spot_number),
+                )
+            connection.commit()
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_bookings_remote_id ON bookings(remote_id)"
+        )
+
+    def sync_remote_spots(self, event_id, occupied_spots):
+        """Apply server-authoritative availability without deleting local history."""
+
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        occupied_spots = {int(number) for number in occupied_spots}
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE event_spots
+                SET status = 'available', source = 'online', booking_id = NULL,
+                    updated_at = ?
+                WHERE event_id = ? AND source != 'booking'
+                """,
+                (timestamp, event_id),
+            )
+            for spot_number in occupied_spots:
+                connection.execute(
+                    """
+                    UPDATE event_spots
+                    SET status = 'occupied', source = 'online', updated_at = ?
+                    WHERE event_id = ? AND spot_number = ?
+                    """,
+                    (timestamp, event_id, spot_number),
+                )
+            connection.commit()
 
     @staticmethod
     def _migrate_gallery_columns(connection):
@@ -796,7 +880,7 @@ class BookingDatabase:
                 SELECT booking_code, event_id, customer_name, customer_phone,
                        customer_notes, ticket_count, payment_method, total_amount,
                        payment_status, spot_number, bait_rule_accepted, created_at,
-                       payment_reference, user_id
+                       payment_reference, user_id, remote_id
                 FROM bookings
                 {where_clause}
                 ORDER BY created_at DESC, id DESC
@@ -855,8 +939,8 @@ class BookingDatabase:
                         booking_code, event_id, customer_name, customer_phone,
                         customer_notes, ticket_count, payment_method, total_amount,
                         payment_status, spot_number, bait_rule_accepted, created_at,
-                        payment_reference, updated_at, user_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        payment_reference, updated_at, user_id, remote_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         booking["booking_code"],
@@ -874,6 +958,7 @@ class BookingDatabase:
                         booking.get("payment_reference"),
                         timestamp,
                         booking.get("user_id"),
+                        booking.get("remote_id"),
                     ),
                 )
                 connection.execute(
@@ -907,8 +992,9 @@ class BookingDatabase:
                 ) from error
         return dict(booking)
 
-    def create_user(self, username, password, full_name, phone):
+    def create_user(self, username, password, full_name, phone, email=None):
         username = username.strip().lower()
+        email = email.strip().lower() if email else None
         timestamp = datetime.now().isoformat(timespec="seconds")
         salt = secrets.token_hex(16)
         password_hash = self._hash_password(password, salt)
@@ -917,12 +1003,13 @@ class BookingDatabase:
                 cursor = connection.execute(
                     """
                     INSERT INTO users(
-                        username, full_name, phone, password_hash, password_salt,
+                        username, email, remote_id, full_name, phone, password_hash, password_salt,
                         avatar_path, status, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, NULL, 'active', ?, ?)
+                    ) VALUES (?, ?, NULL, ?, ?, ?, ?, NULL, 'active', ?, ?)
                     """,
                     (
                         username,
+                        email,
                         full_name.strip(),
                         phone.strip(),
                         password_hash,
@@ -942,7 +1029,7 @@ class BookingDatabase:
                 )
                 connection.commit()
             except sqlite3.IntegrityError as error:
-                raise AccountExistsError("Username sudah digunakan.") from error
+                raise AccountExistsError("Username atau email sudah digunakan.") from error
         return self.get_user(cursor.lastrowid)
 
     def authenticate_user(self, username, password):
@@ -952,9 +1039,9 @@ class BookingDatabase:
             row = connection.execute(
                 """
                 SELECT * FROM users
-                WHERE username = ? COLLATE NOCASE
+                WHERE username = ? COLLATE NOCASE OR email = ? COLLATE NOCASE
                 """,
-                (normalized_username,),
+                (normalized_username, normalized_username),
             ).fetchone()
             success = False
             if row and row["status"] == "active":
@@ -979,11 +1066,99 @@ class BookingDatabase:
             ).fetchone()
         return self._user_dict(row) if row else None
 
+    def upsert_remote_user(self, remote_id, email, profile):
+        """Cache a Supabase profile locally while preserving integer FKs."""
+
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        username = (profile.get("username") or email.split("@", 1)[0]).strip().lower()
+        full_name = (profile.get("full_name") or username).strip()
+        phone = (profile.get("phone") or "").strip()
+        avatar_path = profile.get("avatar_path")
+        status = profile.get("status") or "active"
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT id FROM users WHERE remote_id = ? OR email = ? COLLATE NOCASE",
+                (remote_id, email.strip().lower()),
+            ).fetchone()
+            if row:
+                user_id = row["id"]
+                connection.execute(
+                    """
+                    UPDATE users SET remote_id = ?, email = ?, username = ?,
+                        full_name = ?, phone = ?, avatar_path = ?, status = ?,
+                        updated_at = ? WHERE id = ?
+                    """,
+                    (
+                        remote_id,
+                        email.strip().lower(),
+                        username,
+                        full_name,
+                        phone,
+                        avatar_path,
+                        status,
+                        timestamp,
+                        user_id,
+                    ),
+                )
+            else:
+                salt = secrets.token_hex(16)
+                disabled_hash = self._hash_password(secrets.token_urlsafe(32), salt)
+                try:
+                    cursor = connection.execute(
+                        """
+                        INSERT INTO users(
+                            username, email, remote_id, full_name, phone,
+                            password_hash, password_salt, avatar_path, status,
+                            created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            username,
+                            email.strip().lower(),
+                            remote_id,
+                            full_name,
+                            phone,
+                            disabled_hash,
+                            salt,
+                            avatar_path,
+                            status,
+                            timestamp,
+                            timestamp,
+                        ),
+                    )
+                except sqlite3.IntegrityError:
+                    username = f"{username[:17]}_{remote_id[:6]}"
+                    cursor = connection.execute(
+                        """
+                        INSERT INTO users(
+                            username, email, remote_id, full_name, phone,
+                            password_hash, password_salt, avatar_path, status,
+                            created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            username,
+                            email.strip().lower(),
+                            remote_id,
+                            full_name,
+                            phone,
+                            disabled_hash,
+                            salt,
+                            avatar_path,
+                            status,
+                            timestamp,
+                            timestamp,
+                        ),
+                    )
+                user_id = cursor.lastrowid
+            connection.commit()
+        return self.get_user(user_id)
+
     def list_users(self):
         with self.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT u.id, u.username, u.full_name, u.phone, u.avatar_path,
+                SELECT u.id, u.username, u.email, u.remote_id, u.full_name, u.phone, u.avatar_path,
                        u.status, u.created_at, u.updated_at,
                        COUNT(DISTINCT b.id) AS booking_count,
                        MAX(CASE WHEN l.success = 1 THEN l.created_at END) AS last_login
@@ -1141,6 +1316,8 @@ class BookingDatabase:
         return {
             "id": row["id"],
             "username": row["username"],
+            "email": row["email"],
+            "remote_id": row["remote_id"],
             "full_name": row["full_name"],
             "phone": row["phone"],
             "avatar_path": row["avatar_path"],
@@ -1206,6 +1383,52 @@ class BookingDatabase:
                 (key,),
             ).fetchone()
         return row["setting_value"] if row else default
+
+    def admin_pin_is_configured(self):
+        return bool(
+            self.get_setting("admin_pin_hash")
+            and self.get_setting("admin_pin_salt")
+        )
+
+    def set_admin_pin(self, pin, actor="admin"):
+        """Store a one-way PBKDF2 representation of the local admin PIN."""
+        pin = str(pin).strip()
+        if len(pin) < 6 or not pin.isdigit():
+            raise ValueError("PIN admin harus terdiri dari minimal 6 angka.")
+        salt = secrets.token_bytes(16)
+        pin_hash = hashlib.pbkdf2_hmac(
+            "sha256",
+            pin.encode("utf-8"),
+            salt,
+            self.ADMIN_PIN_ITERATIONS,
+        )
+        self.set_settings(
+            {
+                "admin_pin_hash": pin_hash.hex(),
+                "admin_pin_salt": salt.hex(),
+                "admin_pin_iterations": self.ADMIN_PIN_ITERATIONS,
+            },
+            actor=actor,
+        )
+
+    def verify_admin_pin(self, pin):
+        stored_hash = self.get_setting("admin_pin_hash")
+        stored_salt = self.get_setting("admin_pin_salt")
+        stored_iterations = self.get_setting(
+            "admin_pin_iterations", self.ADMIN_PIN_ITERATIONS
+        )
+        if not stored_hash or not stored_salt:
+            return False
+        try:
+            candidate = hashlib.pbkdf2_hmac(
+                "sha256",
+                str(pin).encode("utf-8"),
+                bytes.fromhex(stored_salt),
+                int(stored_iterations),
+            )
+            return hmac.compare_digest(candidate.hex(), stored_hash)
+        except (TypeError, ValueError):
+            return False
 
     def set_settings(self, values, actor="admin"):
         timestamp = datetime.now().isoformat(timespec="seconds")

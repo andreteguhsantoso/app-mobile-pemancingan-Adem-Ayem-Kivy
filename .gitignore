@@ -12,3 +12,4 @@ bin/
 .buildozer/
 dist/
 build/
+backend_config.json
