@@ -2,6 +2,10 @@
 
 Aplikasi Python/Kivy yang mengikuti tampilan, data, aset, dan alur utama versi Expo React Native Pemancingan Adem Ayem Dlopo. Seluruh kolam dan event khusus ikan nila.
 
+## Download APK Android
+
+[Download APK Pemancingan Adem Ayem](https://drive.google.com/drive/folders/1yUw-0qiNnXpviBwDBPxXOEJdwp6x5Q-X?usp=sharing)
+
 ## Fitur Aplikasi
 
 - Desain teal, krem, emas, dan oranye yang sama dengan aplikasi Expo
